@@ -1,21 +1,31 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useState, useCallback } from 'react';
 import { supabase } from '@/integrations/supabase/client';
 import { useAuth } from '@/contexts/AuthContext';
 import { formatCurrency, formatDate, UF_LIST, MODALITIES, STATUS_OPTIONS } from '@/lib/constants';
+import { searchProcesses } from '@/lib/searchApi';
+import type { NormalizedProcess, SearchFilters, SourceStatus } from '@/types/processes';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
-import { Star, Eye, FolderPlus, ChevronDown, ChevronUp, X } from 'lucide-react';
+import { Badge } from '@/components/ui/badge';
+import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip';
+import { Star, Eye, FolderPlus, ChevronDown, ChevronUp, X, AlertTriangle, ChevronLeft, ChevronRight } from 'lucide-react';
 import { useNavigate } from 'react-router-dom';
 import { toast } from 'sonner';
+
+const PAGE_SIZE = 20;
 
 const SearchProcesses = () => {
   const { profile } = useAuth();
   const navigate = useNavigate();
-  const [processes, setProcesses] = useState<any[]>([]);
+  const [processes, setProcesses] = useState<NormalizedProcess[]>([]);
   const [loading, setLoading] = useState(false);
   const [showFilters, setShowFilters] = useState(true);
   const [favorites, setFavorites] = useState<Set<string>>(new Set());
+  const [sources, setSources] = useState<SourceStatus[]>([]);
+  const [demoMode, setDemoMode] = useState(false);
+  const [totalRecords, setTotalRecords] = useState(0);
+  const [page, setPage] = useState(1);
 
   // Filters
   const [searchText, setSearchText] = useState('');
@@ -33,30 +43,42 @@ const SearchProcesses = () => {
   const [maxValue, setMaxValue] = useState('');
   const [status, setStatus] = useState('all');
 
-  const fetchProcesses = async () => {
+  const buildFilters = useCallback((): SearchFilters => ({
+    searchText: searchText || undefined,
+    excludeText: excludeText || undefined,
+    modality: modality !== 'all' ? modality : undefined,
+    openDateStart: openDateStart || undefined,
+    openDateEnd: openDateEnd || undefined,
+    closeDateStart: closeDateStart || undefined,
+    closeDateEnd: closeDateEnd || undefined,
+    uf: uf !== 'all' ? uf : undefined,
+    city: city || undefined,
+    agency: agency || undefined,
+    srp: srp !== 'all' ? srp : undefined,
+    minValue: minValue ? parseFloat(minValue) : undefined,
+    maxValue: maxValue ? parseFloat(maxValue) : undefined,
+    status: status !== 'all' ? status : undefined,
+    page,
+    pageSize: PAGE_SIZE,
+  }), [searchText, excludeText, modality, openDateStart, openDateEnd, closeDateStart, closeDateEnd, uf, city, agency, srp, minValue, maxValue, status, page]);
+
+  const fetchProcesses = useCallback(async (currentPage?: number) => {
     setLoading(true);
-    let query = supabase.from('public_processes').select('*').order('closing_date', { ascending: true });
-
-    if (searchText) query = query.ilike('title', `%${searchText}%`);
-    if (excludeText) query = query.not('title', 'ilike', `%${excludeText}%`);
-    if (modality !== 'all') query = query.eq('modality', modality);
-    if (openDateStart) query = query.gte('opening_date', openDateStart);
-    if (openDateEnd) query = query.lte('opening_date', openDateEnd);
-    if (closeDateStart) query = query.gte('closing_date', closeDateStart);
-    if (closeDateEnd) query = query.lte('closing_date', closeDateEnd);
-    if (uf !== 'all') query = query.eq('state', uf);
-    if (city) query = query.ilike('city', `%${city}%`);
-    if (agency) query = query.ilike('agency', `%${agency}%`);
-    if (srp === 'sim') query = query.eq('is_srp', true);
-    if (srp === 'nao') query = query.eq('is_srp', false);
-    if (minValue) query = query.gte('estimated_value', parseFloat(minValue));
-    if (maxValue) query = query.lte('estimated_value', parseFloat(maxValue));
-    if (status !== 'all') query = query.eq('status', status);
-
-    const { data } = await query;
-    setProcesses(data || []);
-    setLoading(false);
-  };
+    try {
+      const filters = buildFilters();
+      if (currentPage) filters.page = currentPage;
+      const result = await searchProcesses(filters);
+      setProcesses(result.data);
+      setSources(result.sources);
+      setDemoMode(result.demoMode);
+      setTotalRecords(result.totalRecords);
+    } catch (err: any) {
+      toast.error(err.message || 'Erro ao buscar licitações');
+      setProcesses([]);
+    } finally {
+      setLoading(false);
+    }
+  }, [buildFilters]);
 
   const loadFavorites = async () => {
     if (!profile?.company_id) return;
@@ -64,32 +86,92 @@ const SearchProcesses = () => {
     setFavorites(new Set((data || []).map((d: any) => d.public_process_id)));
   };
 
-  useEffect(() => { fetchProcesses(); loadFavorites(); }, [profile?.company_id]);
+  useEffect(() => { loadFavorites(); }, [profile?.company_id]);
 
-  const toggleFavorite = async (processId: string) => {
-    if (!profile?.company_id) { toast.error('Configure sua empresa primeiro.'); return; }
-    const isFav = favorites.has(processId);
-    if (isFav) {
-      await supabase.from('saved_processes').delete().eq('company_id', profile.company_id).eq('public_process_id', processId).eq('is_favorite', true);
-      setFavorites(prev => { const n = new Set(prev); n.delete(processId); return n; });
-    } else {
-      const { data: existing } = await supabase.from('saved_processes').select('id').eq('company_id', profile.company_id).eq('public_process_id', processId).maybeSingle();
-      if (existing) {
-        await supabase.from('saved_processes').update({ is_favorite: true }).eq('id', existing.id);
-      } else {
-        await supabase.from('saved_processes').insert({ company_id: profile.company_id, public_process_id: processId, is_favorite: true });
-      }
-      setFavorites(prev => new Set(prev).add(processId));
+  const upsertPublicProcess = async (process: NormalizedProcess): Promise<string> => {
+    // Check if already exists by source + external_id
+    const { data: existing } = await supabase
+      .from('public_processes')
+      .select('id')
+      .eq('source', process.source)
+      .eq('external_id', process.external_id)
+      .maybeSingle();
+
+    if (existing) return existing.id;
+
+    // Insert new
+    const { data: inserted, error } = await supabase.from('public_processes').insert({
+      external_id: process.external_id,
+      source: process.source,
+      title: process.title,
+      object_description: process.object_description,
+      agency: process.agency,
+      government_level: process.government_level,
+      modality: process.modality,
+      estimated_value: process.estimated_value,
+      is_srp: process.is_srp,
+      state: process.state,
+      city: process.city,
+      publication_date: process.publication_date,
+      opening_date: process.opening_date,
+      closing_date: process.closing_date,
+      status: process.status,
+      source_portal: process.source_portal,
+      external_url: process.external_url,
+    }).select('id').single();
+
+    if (error) {
+      // Might be RLS issue - public_processes is read-only for authenticated users
+      // We'll need to handle this via edge function or allow inserts
+      console.error('Error inserting public process:', error);
+      throw new Error('Erro ao salvar processo. Verifique permissões.');
     }
-    toast.success(isFav ? 'Removido dos favoritos' : 'Adicionado aos favoritos');
+
+    return inserted.id;
   };
 
-  const saveToFunnel = async (processId: string) => {
+  const toggleFavorite = async (process: NormalizedProcess) => {
     if (!profile?.company_id) { toast.error('Configure sua empresa primeiro.'); return; }
-    const { data: existing } = await supabase.from('saved_processes').select('id').eq('company_id', profile.company_id).eq('public_process_id', processId).maybeSingle();
-    if (existing) { toast.info('Processo já está no funil.'); return; }
-    await supabase.from('saved_processes').insert({ company_id: profile.company_id, public_process_id: processId, funnel_stage: 'Encontrado' });
-    toast.success('Processo salvo no funil!');
+    
+    try {
+      const dbId = await upsertPublicProcess(process);
+      const isFav = favorites.has(dbId);
+      
+      if (isFav) {
+        await supabase.from('saved_processes').delete().eq('company_id', profile.company_id).eq('public_process_id', dbId).eq('is_favorite', true);
+        setFavorites(prev => { const n = new Set(prev); n.delete(dbId); return n; });
+      } else {
+        const { data: existing } = await supabase.from('saved_processes').select('id').eq('company_id', profile.company_id).eq('public_process_id', dbId).maybeSingle();
+        if (existing) {
+          await supabase.from('saved_processes').update({ is_favorite: true }).eq('id', existing.id);
+        } else {
+          await supabase.from('saved_processes').insert({ company_id: profile.company_id, public_process_id: dbId, is_favorite: true });
+        }
+        setFavorites(prev => new Set(prev).add(dbId));
+      }
+      toast.success(isFav ? 'Removido dos favoritos' : 'Adicionado aos favoritos');
+    } catch (err: any) {
+      toast.error(err.message || 'Erro ao favoritar');
+    }
+  };
+
+  const saveToFunnel = async (process: NormalizedProcess) => {
+    if (!profile?.company_id) { toast.error('Configure sua empresa primeiro.'); return; }
+    try {
+      const dbId = await upsertPublicProcess(process);
+      const { data: existing } = await supabase.from('saved_processes').select('id').eq('company_id', profile.company_id).eq('public_process_id', dbId).maybeSingle();
+      if (existing) { toast.info('Processo já está no funil.'); return; }
+      await supabase.from('saved_processes').insert({ company_id: profile.company_id, public_process_id: dbId, funnel_stage: 'Encontrado' });
+      toast.success('Processo salvo no funil!');
+    } catch (err: any) {
+      toast.error(err.message || 'Erro ao salvar no funil');
+    }
+  };
+
+  const viewDetail = (process: NormalizedProcess) => {
+    // Store process data in sessionStorage for external processes not yet saved
+    sessionStorage.setItem(`process_${process.id}`, JSON.stringify(process));
+    navigate(`/licitacao/${process.id}`);
   };
 
   const clearFilters = () => {
@@ -98,18 +180,69 @@ const SearchProcesses = () => {
     setSrp('all'); setMinValue(''); setMaxValue(''); setStatus('all');
   };
 
+  const handleSearch = () => {
+    setPage(1);
+    fetchProcesses(1);
+  };
+
+  const handlePageChange = (newPage: number) => {
+    setPage(newPage);
+    fetchProcesses(newPage);
+  };
+
+  const sourceBadgeColor = (source: string) => {
+    if (source === 'PNCP') return 'bg-blue-500/10 text-blue-600 border-blue-200';
+    if (source === 'COMPRAS_GOV') return 'bg-green-500/10 text-green-600 border-green-200';
+    return 'bg-muted text-muted-foreground';
+  };
+
+  const totalPages = Math.ceil(totalRecords / PAGE_SIZE);
+
   return (
     <div className="space-y-4">
       <div className="flex items-center justify-between">
         <div>
           <h1 className="text-2xl font-bold text-foreground">Buscar Licitações</h1>
-          <p className="text-sm text-muted-foreground">Encontre oportunidades de licitação</p>
+          <p className="text-sm text-muted-foreground">Encontre oportunidades de licitação em tempo real</p>
         </div>
         <Button variant="outline" size="sm" onClick={() => setShowFilters(!showFilters)}>
           {showFilters ? <ChevronUp className="mr-1 h-4 w-4" /> : <ChevronDown className="mr-1 h-4 w-4" />}
           Filtros
         </Button>
       </div>
+
+      {/* Source status indicators */}
+      {sources.length > 0 && (
+        <div className="flex flex-wrap gap-2">
+          {demoMode && (
+            <div className="flex items-center gap-1.5 rounded-lg bg-warning/10 px-3 py-1.5 text-xs font-medium text-warning">
+              <AlertTriangle className="h-3.5 w-3.5" />
+              Modo demonstração — APIs externas indisponíveis
+            </div>
+          )}
+          {sources.map((s, i) => (
+            <div key={i} className={`flex items-center gap-1.5 rounded-lg px-3 py-1.5 text-xs font-medium ${
+              s.status === 'ok' ? 'bg-success/10 text-success' :
+              s.status === 'error' ? 'bg-destructive/10 text-destructive' :
+              'bg-muted text-muted-foreground'
+            }`}>
+              <span className={`h-1.5 w-1.5 rounded-full ${
+                s.status === 'ok' ? 'bg-success' :
+                s.status === 'error' ? 'bg-destructive' : 'bg-muted-foreground'
+              }`} />
+              {s.name}: {s.status === 'ok' ? 'Conectado' : s.status === 'error' ? 'Erro' : 'Sem resultados'}
+              {s.message && s.status === 'error' && (
+                <Tooltip>
+                  <TooltipTrigger asChild>
+                    <AlertTriangle className="h-3 w-3 cursor-help" />
+                  </TooltipTrigger>
+                  <TooltipContent><p className="max-w-xs text-xs">{s.message}</p></TooltipContent>
+                </Tooltip>
+              )}
+            </div>
+          ))}
+        </div>
+      )}
 
       {showFilters && (
         <div className="rounded-xl bg-card p-5 shadow-card space-y-4">
@@ -153,7 +286,7 @@ const SearchProcesses = () => {
             <Input type="number" placeholder="Valor máximo" value={maxValue} onChange={e => setMaxValue(e.target.value)} />
           </div>
           <div className="flex gap-2">
-            <Button onClick={fetchProcesses} size="sm">Buscar</Button>
+            <Button onClick={handleSearch} size="sm">Buscar</Button>
             <Button onClick={clearFilters} variant="ghost" size="sm"><X className="mr-1 h-3 w-3" />Limpar</Button>
           </div>
         </div>
@@ -161,58 +294,116 @@ const SearchProcesses = () => {
 
       <div className="rounded-xl bg-card shadow-card overflow-x-auto">
         {loading ? (
-          <div className="flex items-center justify-center py-12"><div className="h-6 w-6 animate-spin rounded-full border-4 border-primary border-t-transparent" /></div>
+          <div className="flex items-center justify-center py-12">
+            <div className="flex flex-col items-center gap-3">
+              <div className="h-6 w-6 animate-spin rounded-full border-4 border-primary border-t-transparent" />
+              <p className="text-xs text-muted-foreground">Consultando fontes públicas...</p>
+            </div>
+          </div>
         ) : processes.length === 0 ? (
-          <p className="px-5 py-12 text-center text-sm text-muted-foreground">Nenhuma licitação encontrada.</p>
+          <div className="px-5 py-12 text-center">
+            <p className="text-sm text-muted-foreground">
+              {sources.length === 0 ? 'Clique em "Buscar" para consultar licitações em tempo real.' : 'Nenhuma licitação encontrada com os filtros aplicados.'}
+            </p>
+          </div>
         ) : (
-          <table className="w-full text-sm">
-            <thead>
-              <tr className="border-b border-border text-left text-xs uppercase tracking-wider text-muted-foreground">
-                <th className="px-3 py-3 w-10"></th>
-                <th className="px-3 py-3">Título</th>
-                <th className="px-3 py-3">Órgão</th>
-                <th className="px-3 py-3">Modalidade</th>
-                <th className="px-3 py-3">UF</th>
-                <th className="px-3 py-3">SRP</th>
-                <th className="px-3 py-3 text-right">Valor Estimado</th>
-                <th className="px-3 py-3">Abertura</th>
-                <th className="px-3 py-3">Fechamento</th>
-                <th className="px-3 py-3">Situação</th>
-                <th className="px-3 py-3">Ações</th>
-              </tr>
-            </thead>
-            <tbody>
-              {processes.map((p) => (
-                <tr key={p.id} className="border-b border-border/50 hover:bg-muted/30 transition-colors">
-                  <td className="px-3 py-2.5">
-                    <button onClick={() => toggleFavorite(p.id)} className="text-muted-foreground hover:text-warning transition-colors">
-                      <Star className={`h-4 w-4 ${favorites.has(p.id) ? 'fill-warning text-warning' : ''}`} />
-                    </button>
-                  </td>
-                  <td className="max-w-[220px] truncate px-3 py-2.5 font-medium text-card-foreground">{p.title}</td>
-                  <td className="max-w-[160px] truncate px-3 py-2.5 text-muted-foreground">{p.agency}</td>
-                  <td className="px-3 py-2.5 text-muted-foreground">{p.modality}</td>
-                  <td className="px-3 py-2.5 text-muted-foreground">{p.state}</td>
-                  <td className="px-3 py-2.5 text-muted-foreground">{p.is_srp ? 'Sim' : 'Não'}</td>
-                  <td className="px-3 py-2.5 text-right tabular-nums font-mono text-card-foreground">{formatCurrency(p.estimated_value)}</td>
-                  <td className="px-3 py-2.5 text-muted-foreground">{formatDate(p.opening_date)}</td>
-                  <td className="px-3 py-2.5 text-muted-foreground">{formatDate(p.closing_date)}</td>
-                  <td className="px-3 py-2.5">
-                    <span className={`inline-flex items-center gap-1.5 rounded-full px-2 py-0.5 text-xs font-medium ${p.status === 'Aberto' ? 'bg-success/10 text-success' : p.status === 'Encerrado' ? 'bg-muted text-muted-foreground' : 'bg-info/10 text-info'}`}>
-                      <span className={`h-1.5 w-1.5 rounded-full ${p.status === 'Aberto' ? 'bg-success' : p.status === 'Encerrado' ? 'bg-muted-foreground' : 'bg-info'}`} />
-                      {p.status}
-                    </span>
-                  </td>
-                  <td className="px-3 py-2.5">
-                    <div className="flex items-center gap-1">
-                      <Button variant="ghost" size="icon" className="h-7 w-7" onClick={() => navigate(`/licitacao/${p.id}`)}><Eye className="h-3.5 w-3.5" /></Button>
-                      <Button variant="ghost" size="icon" className="h-7 w-7" onClick={() => saveToFunnel(p.id)}><FolderPlus className="h-3.5 w-3.5" /></Button>
-                    </div>
-                  </td>
+          <>
+            <table className="w-full text-sm">
+              <thead>
+                <tr className="border-b border-border text-left text-xs uppercase tracking-wider text-muted-foreground">
+                  <th className="px-3 py-3 w-10"></th>
+                  <th className="px-3 py-3 w-16">Fonte</th>
+                  <th className="px-3 py-3">Título</th>
+                  <th className="px-3 py-3">Órgão</th>
+                  <th className="px-3 py-3">Modalidade</th>
+                  <th className="px-3 py-3">UF</th>
+                  <th className="px-3 py-3">SRP</th>
+                  <th className="px-3 py-3 text-right">Valor Estimado</th>
+                  <th className="px-3 py-3">Abertura</th>
+                  <th className="px-3 py-3">Fechamento</th>
+                  <th className="px-3 py-3">Situação</th>
+                  <th className="px-3 py-3">Ações</th>
                 </tr>
-              ))}
-            </tbody>
-          </table>
+              </thead>
+              <tbody>
+                {processes.map((p) => (
+                  <tr key={p.id} className="border-b border-border/50 hover:bg-muted/30 transition-colors">
+                    <td className="px-3 py-2.5">
+                      <button onClick={() => toggleFavorite(p)} className="text-muted-foreground hover:text-warning transition-colors">
+                        <Star className={`h-4 w-4 ${favorites.has(p.id) ? 'fill-warning text-warning' : ''}`} />
+                      </button>
+                    </td>
+                    <td className="px-3 py-2.5">
+                      <span className={`inline-flex items-center rounded-md border px-1.5 py-0.5 text-[10px] font-semibold ${sourceBadgeColor(p.source)}`}>
+                        {p.source === 'PNCP' ? 'PNCP' : 'CG'}
+                      </span>
+                    </td>
+                    <td className="max-w-[220px] px-3 py-2.5">
+                      <Tooltip>
+                        <TooltipTrigger asChild>
+                          <span className="block truncate font-medium text-card-foreground cursor-help">{p.title}</span>
+                        </TooltipTrigger>
+                        <TooltipContent side="bottom" className="max-w-md">
+                          <p className="text-xs">{p.title}</p>
+                        </TooltipContent>
+                      </Tooltip>
+                    </td>
+                    <td className="max-w-[160px] truncate px-3 py-2.5 text-muted-foreground">{p.agency}</td>
+                    <td className="px-3 py-2.5 text-muted-foreground text-xs">{p.modality}</td>
+                    <td className="px-3 py-2.5 text-muted-foreground">{p.state}</td>
+                    <td className="px-3 py-2.5 text-muted-foreground">{p.is_srp ? 'Sim' : p.is_srp === false ? 'Não' : '—'}</td>
+                    <td className="px-3 py-2.5 text-right tabular-nums font-mono text-card-foreground">{formatCurrency(p.estimated_value)}</td>
+                    <td className="px-3 py-2.5 text-muted-foreground">{formatDate(p.opening_date)}</td>
+                    <td className="px-3 py-2.5 text-muted-foreground">{formatDate(p.closing_date)}</td>
+                    <td className="px-3 py-2.5">
+                      <span className="inline-flex items-center gap-1.5 rounded-full px-2 py-0.5 text-xs font-medium bg-info/10 text-info">
+                        <span className="h-1.5 w-1.5 rounded-full bg-info" />
+                        {p.status || '—'}
+                      </span>
+                    </td>
+                    <td className="px-3 py-2.5">
+                      <div className="flex items-center gap-1">
+                        <Button variant="ghost" size="icon" className="h-7 w-7" onClick={() => viewDetail(p)}>
+                          <Eye className="h-3.5 w-3.5" />
+                        </Button>
+                        <Button variant="ghost" size="icon" className="h-7 w-7" onClick={() => saveToFunnel(p)}>
+                          <FolderPlus className="h-3.5 w-3.5" />
+                        </Button>
+                      </div>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+
+            {/* Pagination */}
+            <div className="flex items-center justify-between border-t border-border px-4 py-3">
+              <p className="text-xs text-muted-foreground">
+                {totalRecords > 0 ? `~${totalRecords.toLocaleString('pt-BR')} resultados encontrados` : `${processes.length} resultados`}
+              </p>
+              <div className="flex items-center gap-2">
+                <Button
+                  variant="outline"
+                  size="sm"
+                  disabled={page <= 1}
+                  onClick={() => handlePageChange(page - 1)}
+                >
+                  <ChevronLeft className="h-4 w-4" />
+                </Button>
+                <span className="text-xs text-muted-foreground">
+                  Página {page}{totalPages > 0 ? ` de ~${totalPages}` : ''}
+                </span>
+                <Button
+                  variant="outline"
+                  size="sm"
+                  disabled={processes.length < PAGE_SIZE}
+                  onClick={() => handlePageChange(page + 1)}
+                >
+                  <ChevronRight className="h-4 w-4" />
+                </Button>
+              </div>
+            </div>
+          </>
         )}
       </div>
     </div>
