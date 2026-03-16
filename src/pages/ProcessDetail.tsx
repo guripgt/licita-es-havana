@@ -3,9 +3,11 @@ import { useParams, useNavigate } from 'react-router-dom';
 import { supabase } from '@/integrations/supabase/client';
 import { useAuth } from '@/contexts/AuthContext';
 import { formatCurrency, formatDate, formatDateTime, FUNNEL_STAGES } from '@/lib/constants';
+import type { NormalizedProcess } from '@/types/processes';
 import { Button } from '@/components/ui/button';
 import { Textarea } from '@/components/ui/textarea';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
+import { Badge } from '@/components/ui/badge';
 import { ArrowLeft, Star, ExternalLink, FolderPlus, FileText } from 'lucide-react';
 import { toast } from 'sonner';
 
@@ -19,12 +21,46 @@ const ProcessDetail = () => {
   const [linkedDocs, setLinkedDocs] = useState<any[]>([]);
   const [companyDocs, setCompanyDocs] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
+  const [isExternal, setIsExternal] = useState(false);
 
   useEffect(() => {
     const load = async () => {
-      const { data: proc } = await supabase.from('public_processes').select('*').eq('id', id!).single();
-      setProcess(proc);
-      if (profile?.company_id) {
+      // Try to load from DB first (saved process)
+      const { data: proc } = await supabase.from('public_processes').select('*').eq('id', id!).maybeSingle();
+      
+      if (proc) {
+        setProcess(proc);
+        setIsExternal(false);
+      } else {
+        // Try sessionStorage for external process data (from search results)
+        const cached = sessionStorage.getItem(`process_${id}`);
+        if (cached) {
+          const parsed: NormalizedProcess = JSON.parse(cached);
+          setProcess({
+            id: parsed.id,
+            external_id: parsed.external_id,
+            source: parsed.source,
+            title: parsed.title,
+            object_description: parsed.object_description,
+            agency: parsed.agency,
+            government_level: parsed.government_level,
+            modality: parsed.modality,
+            estimated_value: parsed.estimated_value,
+            is_srp: parsed.is_srp,
+            state: parsed.state,
+            city: parsed.city,
+            publication_date: parsed.publication_date,
+            opening_date: parsed.opening_date,
+            closing_date: parsed.closing_date,
+            status: parsed.status,
+            source_portal: parsed.source_portal,
+            external_url: parsed.external_url,
+          });
+          setIsExternal(true);
+        }
+      }
+
+      if (profile?.company_id && proc) {
         const { data: sp } = await supabase.from('saved_processes').select('*').eq('company_id', profile.company_id).eq('public_process_id', id!).maybeSingle();
         setSavedProcess(sp);
         setNotes(sp?.notes || '');
@@ -34,31 +70,96 @@ const ProcessDetail = () => {
         }
         const { data: cd } = await supabase.from('company_documents').select('*').eq('company_id', profile.company_id);
         setCompanyDocs(cd || []);
+      } else if (profile?.company_id) {
+        const { data: cd } = await supabase.from('company_documents').select('*').eq('company_id', profile.company_id);
+        setCompanyDocs(cd || []);
       }
+
       setLoading(false);
     };
     load();
   }, [id, profile?.company_id]);
 
+  const upsertAndGetDbId = async (): Promise<string> => {
+    if (!isExternal) return id!;
+    
+    // For external processes, we need to save to public_processes first
+    const cached = sessionStorage.getItem(`process_${id}`);
+    if (!cached) throw new Error('Dados do processo não encontrados');
+    const parsed: NormalizedProcess = JSON.parse(cached);
+
+    // Check if already exists
+    const { data: existing } = await supabase
+      .from('public_processes')
+      .select('id')
+      .eq('source', parsed.source)
+      .eq('external_id', parsed.external_id)
+      .maybeSingle();
+
+    if (existing) return existing.id;
+
+    const { data: inserted, error } = await supabase.from('public_processes').insert({
+      external_id: parsed.external_id,
+      source: parsed.source,
+      title: parsed.title,
+      object_description: parsed.object_description,
+      agency: parsed.agency,
+      government_level: parsed.government_level,
+      modality: parsed.modality,
+      estimated_value: parsed.estimated_value,
+      is_srp: parsed.is_srp,
+      state: parsed.state,
+      city: parsed.city,
+      publication_date: parsed.publication_date,
+      opening_date: parsed.opening_date,
+      closing_date: parsed.closing_date,
+      status: parsed.status,
+      source_portal: parsed.source_portal,
+      external_url: parsed.external_url,
+    }).select('id').single();
+
+    if (error) throw new Error('Erro ao salvar processo no banco');
+    return inserted.id;
+  };
+
   const saveOrUpdate = async (stage?: string) => {
     if (!profile?.company_id) { toast.error('Configure sua empresa.'); return; }
-    if (savedProcess) {
-      await supabase.from('saved_processes').update({ notes, ...(stage ? { funnel_stage: stage } : {}) }).eq('id', savedProcess.id);
-      setSavedProcess({ ...savedProcess, notes, ...(stage ? { funnel_stage: stage } : {}) });
-    } else {
-      const { data } = await supabase.from('saved_processes').insert({ company_id: profile.company_id, public_process_id: id!, notes, funnel_stage: stage || 'Encontrado' }).select().single();
-      setSavedProcess(data);
+    try {
+      const dbId = await upsertAndGetDbId();
+      
+      if (savedProcess) {
+        await supabase.from('saved_processes').update({ notes, ...(stage ? { funnel_stage: stage } : {}) }).eq('id', savedProcess.id);
+        setSavedProcess({ ...savedProcess, notes, ...(stage ? { funnel_stage: stage } : {}) });
+      } else {
+        const { data } = await supabase.from('saved_processes').insert({ company_id: profile.company_id, public_process_id: dbId, notes, funnel_stage: stage || 'Encontrado' }).select().single();
+        setSavedProcess(data);
+        setIsExternal(false);
+      }
+      toast.success('Salvo!');
+    } catch (err: any) {
+      toast.error(err.message || 'Erro ao salvar');
     }
-    toast.success('Salvo!');
   };
 
   const toggleFavorite = async () => {
-    if (!savedProcess) await saveOrUpdate();
-    const sp = savedProcess || (await supabase.from('saved_processes').select('*').eq('company_id', profile!.company_id!).eq('public_process_id', id!).single()).data;
-    if (!sp) return;
-    await supabase.from('saved_processes').update({ is_favorite: !sp.is_favorite }).eq('id', sp.id);
-    setSavedProcess({ ...sp, is_favorite: !sp.is_favorite });
-    toast.success(sp.is_favorite ? 'Removido dos favoritos' : 'Adicionado aos favoritos');
+    if (!profile?.company_id) { toast.error('Configure sua empresa.'); return; }
+    try {
+      const dbId = await upsertAndGetDbId();
+      
+      if (!savedProcess) {
+        const { data } = await supabase.from('saved_processes').insert({ company_id: profile.company_id, public_process_id: dbId, is_favorite: true, funnel_stage: 'Encontrado' }).select().single();
+        setSavedProcess(data);
+        setIsExternal(false);
+        toast.success('Adicionado aos favoritos');
+        return;
+      }
+      
+      await supabase.from('saved_processes').update({ is_favorite: !savedProcess.is_favorite }).eq('id', savedProcess.id);
+      setSavedProcess({ ...savedProcess, is_favorite: !savedProcess.is_favorite });
+      toast.success(savedProcess.is_favorite ? 'Removido dos favoritos' : 'Adicionado aos favoritos');
+    } catch (err: any) {
+      toast.error(err.message || 'Erro ao favoritar');
+    }
   };
 
   const linkDocument = async (docId: string) => {
@@ -72,12 +173,18 @@ const ProcessDetail = () => {
   if (loading) return <div className="flex items-center justify-center py-20"><div className="h-8 w-8 animate-spin rounded-full border-4 border-primary border-t-transparent" /></div>;
   if (!process) return <p className="py-20 text-center text-muted-foreground">Processo não encontrado.</p>;
 
+  const sourceBadge = process.source === 'PNCP' 
+    ? { label: 'PNCP', className: 'bg-blue-500/10 text-blue-600 border-blue-200' }
+    : process.source === 'COMPRAS_GOV'
+    ? { label: 'Compras.gov', className: 'bg-green-500/10 text-green-600 border-green-200' }
+    : null;
+
   const fields = [
     { label: 'Órgão', value: process.agency },
     { label: 'Esfera', value: process.government_level },
     { label: 'Modalidade', value: process.modality },
     { label: 'Valor Estimado', value: formatCurrency(process.estimated_value) },
-    { label: 'SRP', value: process.is_srp ? 'Sim' : 'Não' },
+    { label: 'SRP', value: process.is_srp === true ? 'Sim' : process.is_srp === false ? 'Não' : '—' },
     { label: 'UF', value: process.state },
     { label: 'Cidade', value: process.city },
     { label: 'Publicação', value: formatDate(process.publication_date) },
@@ -98,7 +205,19 @@ const ProcessDetail = () => {
           <div className="rounded-xl bg-card p-6 shadow-card">
             <div className="flex items-start justify-between gap-4">
               <div>
-                <span className="text-xs font-medium uppercase tracking-wider text-muted-foreground">{process.modality}</span>
+                <div className="flex items-center gap-2 mb-1">
+                  <span className="text-xs font-medium uppercase tracking-wider text-muted-foreground">{process.modality}</span>
+                  {sourceBadge && (
+                    <span className={`inline-flex items-center rounded-md border px-1.5 py-0.5 text-[10px] font-semibold ${sourceBadge.className}`}>
+                      {sourceBadge.label}
+                    </span>
+                  )}
+                  {isExternal && (
+                    <span className="inline-flex items-center rounded-md bg-warning/10 px-1.5 py-0.5 text-[10px] font-semibold text-warning">
+                      Não salvo
+                    </span>
+                  )}
+                </div>
                 <h1 className="mt-1 text-xl font-bold text-card-foreground">{process.title}</h1>
                 <p className="mt-1 text-sm text-muted-foreground">{process.agency} • {process.city}/{process.state}</p>
               </div>
