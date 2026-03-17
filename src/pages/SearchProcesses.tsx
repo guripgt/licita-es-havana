@@ -7,9 +7,8 @@ import type { NormalizedProcess, SearchFilters, SourceStatus } from '@/types/pro
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
-import { Badge } from '@/components/ui/badge';
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip';
-import { Star, Eye, FolderPlus, ChevronDown, ChevronUp, X, AlertTriangle, ChevronLeft, ChevronRight } from 'lucide-react';
+import { Star, Eye, FolderPlus, ChevronDown, ChevronUp, X, AlertTriangle, Loader2 } from 'lucide-react';
 import { useNavigate } from 'react-router-dom';
 import { toast } from 'sonner';
 
@@ -20,12 +19,14 @@ const SearchProcesses = () => {
   const navigate = useNavigate();
   const [processes, setProcesses] = useState<NormalizedProcess[]>([]);
   const [loading, setLoading] = useState(false);
+  const [loadingMore, setLoadingMore] = useState(false);
   const [showFilters, setShowFilters] = useState(true);
   const [favorites, setFavorites] = useState<Set<string>>(new Set());
   const [sources, setSources] = useState<SourceStatus[]>([]);
   const [demoMode, setDemoMode] = useState(false);
   const [totalRecords, setTotalRecords] = useState(0);
   const [page, setPage] = useState(1);
+  const [hasSearched, setHasSearched] = useState(false);
 
   // Filters
   const [searchText, setSearchText] = useState('');
@@ -43,7 +44,7 @@ const SearchProcesses = () => {
   const [maxValue, setMaxValue] = useState('');
   const [status, setStatus] = useState('all');
 
-  const buildFilters = useCallback((): SearchFilters => ({
+  const buildFilters = useCallback((p: number): SearchFilters => ({
     searchText: searchText || undefined,
     excludeText: excludeText || undefined,
     modality: modality !== 'all' ? modality : undefined,
@@ -58,25 +59,26 @@ const SearchProcesses = () => {
     minValue: minValue ? parseFloat(minValue) : undefined,
     maxValue: maxValue ? parseFloat(maxValue) : undefined,
     status: status !== 'all' ? status : undefined,
-    page,
+    page: p,
     pageSize: PAGE_SIZE,
-  }), [searchText, excludeText, modality, openDateStart, openDateEnd, closeDateStart, closeDateEnd, uf, city, agency, srp, minValue, maxValue, status, page]);
+  }), [searchText, excludeText, modality, openDateStart, openDateEnd, closeDateStart, closeDateEnd, uf, city, agency, srp, minValue, maxValue, status]);
 
-  const fetchProcesses = useCallback(async (currentPage?: number) => {
-    setLoading(true);
+  const fetchProcesses = useCallback(async (targetPage: number, append = false) => {
+    if (append) setLoadingMore(true); else setLoading(true);
     try {
-      const filters = buildFilters();
-      if (currentPage) filters.page = currentPage;
+      const filters = buildFilters(targetPage);
       const result = await searchProcesses(filters);
-      setProcesses(result.data);
+      setProcesses(prev => append ? [...prev, ...result.data] : result.data);
       setSources(result.sources);
       setDemoMode(result.demoMode);
       setTotalRecords(result.totalRecords);
+      setHasSearched(true);
     } catch (err: any) {
       toast.error(err.message || 'Erro ao buscar licitações');
-      setProcesses([]);
+      if (!append) setProcesses([]);
     } finally {
       setLoading(false);
+      setLoadingMore(false);
     }
   }, [buildFilters]);
 
@@ -89,7 +91,6 @@ const SearchProcesses = () => {
   useEffect(() => { loadFavorites(); }, [profile?.company_id]);
 
   const upsertPublicProcess = async (process: NormalizedProcess): Promise<string> => {
-    // Check if already exists by source + external_id
     const { data: existing } = await supabase
       .from('public_processes')
       .select('id')
@@ -99,7 +100,6 @@ const SearchProcesses = () => {
 
     if (existing) return existing.id;
 
-    // Insert new
     const { data: inserted, error } = await supabase.from('public_processes').insert({
       external_id: process.external_id,
       source: process.source,
@@ -121,22 +121,17 @@ const SearchProcesses = () => {
     }).select('id').single();
 
     if (error) {
-      // Might be RLS issue - public_processes is read-only for authenticated users
-      // We'll need to handle this via edge function or allow inserts
       console.error('Error inserting public process:', error);
-      throw new Error('Erro ao salvar processo. Verifique permissões.');
+      throw new Error('Erro ao salvar processo.');
     }
-
     return inserted.id;
   };
 
   const toggleFavorite = async (process: NormalizedProcess) => {
     if (!profile?.company_id) { toast.error('Configure sua empresa primeiro.'); return; }
-    
     try {
       const dbId = await upsertPublicProcess(process);
       const isFav = favorites.has(dbId);
-      
       if (isFav) {
         await supabase.from('saved_processes').delete().eq('company_id', profile.company_id).eq('public_process_id', dbId).eq('is_favorite', true);
         setFavorites(prev => { const n = new Set(prev); n.delete(dbId); return n; });
@@ -169,9 +164,9 @@ const SearchProcesses = () => {
   };
 
   const viewDetail = (process: NormalizedProcess) => {
-    // Store process data in sessionStorage for external processes not yet saved
-    sessionStorage.setItem(`process_${process.id}`, JSON.stringify(process));
-    navigate(`/licitacao/${process.id}`);
+    // Store in sessionStorage so detail page can load without DB lookup
+    sessionStorage.setItem(`process_${process.source}_${process.external_id}`, JSON.stringify(process));
+    navigate(`/licitacao/${process.source}/${encodeURIComponent(process.external_id)}`);
   };
 
   const clearFilters = () => {
@@ -185,9 +180,10 @@ const SearchProcesses = () => {
     fetchProcesses(1);
   };
 
-  const handlePageChange = (newPage: number) => {
-    setPage(newPage);
-    fetchProcesses(newPage);
+  const handleLoadMore = () => {
+    const nextPage = page + 1;
+    setPage(nextPage);
+    fetchProcesses(nextPage, true);
   };
 
   const sourceBadgeColor = (source: string) => {
@@ -196,14 +192,26 @@ const SearchProcesses = () => {
     return 'bg-muted text-muted-foreground';
   };
 
-  const totalPages = Math.ceil(totalRecords / PAGE_SIZE);
+  const sourceStatusColor = (s: SourceStatus) => {
+    if (s.status === 'ok') return 'bg-emerald-500/10 text-emerald-600';
+    if (s.status === 'error') return 'bg-destructive/10 text-destructive';
+    if (s.status === 'disabled') return 'bg-muted text-muted-foreground';
+    return 'bg-muted text-muted-foreground';
+  };
+
+  const sourceStatusLabel = (s: SourceStatus) => {
+    if (s.status === 'ok') return 'Conectado';
+    if (s.status === 'error') return 'Erro';
+    if (s.status === 'disabled') return 'Desabilitado';
+    return 'Sem resultados';
+  };
 
   return (
     <div className="space-y-4">
       <div className="flex items-center justify-between">
         <div>
           <h1 className="text-2xl font-bold text-foreground">Buscar Licitações</h1>
-          <p className="text-sm text-muted-foreground">Encontre oportunidades de licitação em tempo real</p>
+          <p className="text-sm text-muted-foreground">Fonte principal: PNCP • Busca em tempo real</p>
         </div>
         <Button variant="outline" size="sm" onClick={() => setShowFilters(!showFilters)}>
           {showFilters ? <ChevronUp className="mr-1 h-4 w-4" /> : <ChevronDown className="mr-1 h-4 w-4" />}
@@ -211,7 +219,7 @@ const SearchProcesses = () => {
         </Button>
       </div>
 
-      {/* Source status indicators */}
+      {/* Source status */}
       {sources.length > 0 && (
         <div className="flex flex-wrap gap-2">
           {demoMode && (
@@ -221,20 +229,16 @@ const SearchProcesses = () => {
             </div>
           )}
           {sources.map((s, i) => (
-            <div key={i} className={`flex items-center gap-1.5 rounded-lg px-3 py-1.5 text-xs font-medium ${
-              s.status === 'ok' ? 'bg-success/10 text-success' :
-              s.status === 'error' ? 'bg-destructive/10 text-destructive' :
-              'bg-muted text-muted-foreground'
-            }`}>
+            <div key={i} className={`flex items-center gap-1.5 rounded-lg px-3 py-1.5 text-xs font-medium ${sourceStatusColor(s)}`}>
               <span className={`h-1.5 w-1.5 rounded-full ${
-                s.status === 'ok' ? 'bg-success' :
+                s.status === 'ok' ? 'bg-emerald-500' :
                 s.status === 'error' ? 'bg-destructive' : 'bg-muted-foreground'
               }`} />
-              {s.name}: {s.status === 'ok' ? 'Conectado' : s.status === 'error' ? 'Erro' : 'Sem resultados'}
-              {s.message && s.status === 'error' && (
+              {s.name}: {sourceStatusLabel(s)}
+              {s.message && (
                 <Tooltip>
                   <TooltipTrigger asChild>
-                    <AlertTriangle className="h-3 w-3 cursor-help" />
+                    <AlertTriangle className="h-3 w-3 cursor-help opacity-70" />
                   </TooltipTrigger>
                   <TooltipContent><p className="max-w-xs text-xs">{s.message}</p></TooltipContent>
                 </Tooltip>
@@ -247,7 +251,7 @@ const SearchProcesses = () => {
       {showFilters && (
         <div className="rounded-xl bg-card p-5 shadow-card space-y-4">
           <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
-            <Input placeholder="Buscar no objeto..." value={searchText} onChange={e => setSearchText(e.target.value)} />
+            <Input placeholder="Buscar no objeto..." value={searchText} onChange={e => setSearchText(e.target.value)} onKeyDown={e => e.key === 'Enter' && handleSearch()} />
             <Input placeholder="Excluir termos..." value={excludeText} onChange={e => setExcludeText(e.target.value)} />
             <Select value={modality} onValueChange={setModality}>
               <SelectTrigger><SelectValue placeholder="Modalidade" /></SelectTrigger>
@@ -296,14 +300,16 @@ const SearchProcesses = () => {
         {loading ? (
           <div className="flex items-center justify-center py-12">
             <div className="flex flex-col items-center gap-3">
-              <div className="h-6 w-6 animate-spin rounded-full border-4 border-primary border-t-transparent" />
-              <p className="text-xs text-muted-foreground">Consultando fontes públicas...</p>
+              <Loader2 className="h-6 w-6 animate-spin text-primary" />
+              <p className="text-xs text-muted-foreground">Consultando PNCP...</p>
             </div>
           </div>
         ) : processes.length === 0 ? (
           <div className="px-5 py-12 text-center">
             <p className="text-sm text-muted-foreground">
-              {sources.length === 0 ? 'Clique em "Buscar" para consultar licitações em tempo real.' : 'Nenhuma licitação encontrada com os filtros aplicados.'}
+              {!hasSearched
+                ? 'Clique em "Buscar" para consultar licitações em tempo real.'
+                : 'Nenhuma licitação encontrada com os filtros aplicados. Tente ajustar os filtros ou ampliar o período.'}
             </p>
           </div>
         ) : (
@@ -341,7 +347,9 @@ const SearchProcesses = () => {
                     <td className="max-w-[220px] px-3 py-2.5">
                       <Tooltip>
                         <TooltipTrigger asChild>
-                          <span className="block truncate font-medium text-card-foreground cursor-help">{p.title}</span>
+                          <button onClick={() => viewDetail(p)} className="block truncate font-medium text-card-foreground hover:text-primary transition-colors text-left">
+                            {p.title}
+                          </button>
                         </TooltipTrigger>
                         <TooltipContent side="bottom" className="max-w-md">
                           <p className="text-xs">{p.title}</p>
@@ -376,32 +384,21 @@ const SearchProcesses = () => {
               </tbody>
             </table>
 
-            {/* Pagination */}
+            {/* Load more + count */}
             <div className="flex items-center justify-between border-t border-border px-4 py-3">
               <p className="text-xs text-muted-foreground">
-                {totalRecords > 0 ? `~${totalRecords.toLocaleString('pt-BR')} resultados encontrados` : `${processes.length} resultados`}
+                {processes.length} resultado{processes.length !== 1 ? 's' : ''} exibido{processes.length !== 1 ? 's' : ''}
+                {totalRecords > processes.length && ` (de ~${totalRecords.toLocaleString('pt-BR')} encontrados)`}
               </p>
-              <div className="flex items-center gap-2">
-                <Button
-                  variant="outline"
-                  size="sm"
-                  disabled={page <= 1}
-                  onClick={() => handlePageChange(page - 1)}
-                >
-                  <ChevronLeft className="h-4 w-4" />
-                </Button>
-                <span className="text-xs text-muted-foreground">
-                  Página {page}{totalPages > 0 ? ` de ~${totalPages}` : ''}
-                </span>
-                <Button
-                  variant="outline"
-                  size="sm"
-                  disabled={processes.length < PAGE_SIZE}
-                  onClick={() => handlePageChange(page + 1)}
-                >
-                  <ChevronRight className="h-4 w-4" />
-                </Button>
-              </div>
+              <Button
+                variant="outline"
+                size="sm"
+                disabled={loadingMore}
+                onClick={handleLoadMore}
+              >
+                {loadingMore ? <Loader2 className="mr-1 h-4 w-4 animate-spin" /> : null}
+                Carregar mais
+              </Button>
             </div>
           </>
         )}

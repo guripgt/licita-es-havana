@@ -7,12 +7,11 @@ import type { NormalizedProcess } from '@/types/processes';
 import { Button } from '@/components/ui/button';
 import { Textarea } from '@/components/ui/textarea';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
-import { Badge } from '@/components/ui/badge';
-import { ArrowLeft, Star, ExternalLink, FolderPlus, FileText } from 'lucide-react';
+import { ArrowLeft, Star, ExternalLink, FolderPlus, FileText, Loader2 } from 'lucide-react';
 import { toast } from 'sonner';
 
 const ProcessDetail = () => {
-  const { id } = useParams<{ id: string }>();
+  const { source, externalId, id } = useParams<{ source?: string; externalId?: string; id?: string }>();
   const { profile } = useAuth();
   const navigate = useNavigate();
   const [process, setProcess] = useState<any>(null);
@@ -25,52 +24,64 @@ const ProcessDetail = () => {
 
   useEffect(() => {
     const load = async () => {
-      // Try to load from DB first (saved process)
-      const { data: proc } = await supabase.from('public_processes').select('*').eq('id', id!).maybeSingle();
-      
-      if (proc) {
-        setProcess(proc);
-        setIsExternal(false);
-      } else {
-        // Try sessionStorage for external process data (from search results)
-        const cached = sessionStorage.getItem(`process_${id}`);
-        if (cached) {
-          const parsed: NormalizedProcess = JSON.parse(cached);
-          setProcess({
-            id: parsed.id,
-            external_id: parsed.external_id,
-            source: parsed.source,
-            title: parsed.title,
-            object_description: parsed.object_description,
-            agency: parsed.agency,
-            government_level: parsed.government_level,
-            modality: parsed.modality,
-            estimated_value: parsed.estimated_value,
-            is_srp: parsed.is_srp,
-            state: parsed.state,
-            city: parsed.city,
-            publication_date: parsed.publication_date,
-            opening_date: parsed.opening_date,
-            closing_date: parsed.closing_date,
-            status: parsed.status,
-            source_portal: parsed.source_portal,
-            external_url: parsed.external_url,
-          });
-          setIsExternal(true);
+      let proc: any = null;
+      const decodedExternalId = externalId ? decodeURIComponent(externalId) : null;
+
+      // Route 1: /licitacao/:source/:externalId (new stable route)
+      if (source && decodedExternalId) {
+        // Try DB first
+        const { data: dbProc } = await supabase
+          .from('public_processes')
+          .select('*')
+          .eq('source', source)
+          .eq('external_id', decodedExternalId)
+          .maybeSingle();
+
+        if (dbProc) {
+          proc = dbProc;
+          setIsExternal(false);
+        } else {
+          // Try sessionStorage
+          const cached = sessionStorage.getItem(`process_${source}_${decodedExternalId}`);
+          if (cached) {
+            proc = JSON.parse(cached);
+            setIsExternal(true);
+          }
+        }
+      }
+      // Route 2: /licitacao/:id (legacy route, DB UUID lookup)
+      else if (id) {
+        const { data: dbProc } = await supabase.from('public_processes').select('*').eq('id', id).maybeSingle();
+        if (dbProc) {
+          proc = dbProc;
+          setIsExternal(false);
+        } else {
+          // Try sessionStorage with old format
+          const cached = sessionStorage.getItem(`process_${id}`);
+          if (cached) {
+            proc = JSON.parse(cached);
+            setIsExternal(true);
+          }
         }
       }
 
-      if (profile?.company_id && proc) {
-        const { data: sp } = await supabase.from('saved_processes').select('*').eq('company_id', profile.company_id).eq('public_process_id', id!).maybeSingle();
-        setSavedProcess(sp);
-        setNotes(sp?.notes || '');
-        if (sp) {
-          const { data: pd } = await supabase.from('process_documents').select('*, company_documents(*)').eq('saved_process_id', sp.id);
-          setLinkedDocs(pd || []);
+      setProcess(proc);
+
+      // Load saved_process and docs
+      const dbId = proc && !isExternal && proc.id && !proc.id.startsWith('pncp_') && !proc.id.startsWith('compras_gov_')
+        ? proc.id
+        : null;
+
+      if (profile?.company_id) {
+        if (dbId) {
+          const { data: sp } = await supabase.from('saved_processes').select('*').eq('company_id', profile.company_id).eq('public_process_id', dbId).maybeSingle();
+          setSavedProcess(sp);
+          setNotes(sp?.notes || '');
+          if (sp) {
+            const { data: pd } = await supabase.from('process_documents').select('*, company_documents(*)').eq('saved_process_id', sp.id);
+            setLinkedDocs(pd || []);
+          }
         }
-        const { data: cd } = await supabase.from('company_documents').select('*').eq('company_id', profile.company_id);
-        setCompanyDocs(cd || []);
-      } else if (profile?.company_id) {
         const { data: cd } = await supabase.from('company_documents').select('*').eq('company_id', profile.company_id);
         setCompanyDocs(cd || []);
       }
@@ -78,44 +89,45 @@ const ProcessDetail = () => {
       setLoading(false);
     };
     load();
-  }, [id, profile?.company_id]);
+  }, [source, externalId, id, profile?.company_id]);
 
   const upsertAndGetDbId = async (): Promise<string> => {
-    if (!isExternal) return id!;
-    
-    // For external processes, we need to save to public_processes first
-    const cached = sessionStorage.getItem(`process_${id}`);
-    if (!cached) throw new Error('Dados do processo não encontrados');
-    const parsed: NormalizedProcess = JSON.parse(cached);
+    if (!isExternal && process?.id && !process.id.startsWith('pncp_') && !process.id.startsWith('compras_gov_')) {
+      return process.id;
+    }
 
-    // Check if already exists
+    // Upsert external process to public_processes
+    const src = process.source || source;
+    const extId = process.external_id || (externalId ? decodeURIComponent(externalId) : null);
+    if (!src || !extId) throw new Error('Dados insuficientes para salvar');
+
     const { data: existing } = await supabase
       .from('public_processes')
       .select('id')
-      .eq('source', parsed.source)
-      .eq('external_id', parsed.external_id)
+      .eq('source', src)
+      .eq('external_id', extId)
       .maybeSingle();
 
     if (existing) return existing.id;
 
     const { data: inserted, error } = await supabase.from('public_processes').insert({
-      external_id: parsed.external_id,
-      source: parsed.source,
-      title: parsed.title,
-      object_description: parsed.object_description,
-      agency: parsed.agency,
-      government_level: parsed.government_level,
-      modality: parsed.modality,
-      estimated_value: parsed.estimated_value,
-      is_srp: parsed.is_srp,
-      state: parsed.state,
-      city: parsed.city,
-      publication_date: parsed.publication_date,
-      opening_date: parsed.opening_date,
-      closing_date: parsed.closing_date,
-      status: parsed.status,
-      source_portal: parsed.source_portal,
-      external_url: parsed.external_url,
+      external_id: extId,
+      source: src,
+      title: process.title,
+      object_description: process.object_description,
+      agency: process.agency,
+      government_level: process.government_level,
+      modality: process.modality,
+      estimated_value: process.estimated_value,
+      is_srp: process.is_srp,
+      state: process.state,
+      city: process.city,
+      publication_date: process.publication_date,
+      opening_date: process.opening_date,
+      closing_date: process.closing_date,
+      status: process.status,
+      source_portal: process.source_portal,
+      external_url: process.external_url,
     }).select('id').single();
 
     if (error) throw new Error('Erro ao salvar processo no banco');
@@ -126,7 +138,6 @@ const ProcessDetail = () => {
     if (!profile?.company_id) { toast.error('Configure sua empresa.'); return; }
     try {
       const dbId = await upsertAndGetDbId();
-      
       if (savedProcess) {
         await supabase.from('saved_processes').update({ notes, ...(stage ? { funnel_stage: stage } : {}) }).eq('id', savedProcess.id);
         setSavedProcess({ ...savedProcess, notes, ...(stage ? { funnel_stage: stage } : {}) });
@@ -145,7 +156,6 @@ const ProcessDetail = () => {
     if (!profile?.company_id) { toast.error('Configure sua empresa.'); return; }
     try {
       const dbId = await upsertAndGetDbId();
-      
       if (!savedProcess) {
         const { data } = await supabase.from('saved_processes').insert({ company_id: profile.company_id, public_process_id: dbId, is_favorite: true, funnel_stage: 'Encontrado' }).select().single();
         setSavedProcess(data);
@@ -153,7 +163,6 @@ const ProcessDetail = () => {
         toast.success('Adicionado aos favoritos');
         return;
       }
-      
       await supabase.from('saved_processes').update({ is_favorite: !savedProcess.is_favorite }).eq('id', savedProcess.id);
       setSavedProcess({ ...savedProcess, is_favorite: !savedProcess.is_favorite });
       toast.success(savedProcess.is_favorite ? 'Removido dos favoritos' : 'Adicionado aos favoritos');
@@ -170,8 +179,13 @@ const ProcessDetail = () => {
     toast.success('Documento vinculado!');
   };
 
-  if (loading) return <div className="flex items-center justify-center py-20"><div className="h-8 w-8 animate-spin rounded-full border-4 border-primary border-t-transparent" /></div>;
-  if (!process) return <p className="py-20 text-center text-muted-foreground">Processo não encontrado.</p>;
+  if (loading) return <div className="flex items-center justify-center py-20"><Loader2 className="h-8 w-8 animate-spin text-primary" /></div>;
+  if (!process) return (
+    <div className="py-20 text-center space-y-4">
+      <p className="text-muted-foreground">Processo não encontrado.</p>
+      <Button variant="outline" onClick={() => navigate('/buscar')}>Voltar à busca</Button>
+    </div>
+  );
 
   const sourceBadge = process.source === 'PNCP' 
     ? { label: 'PNCP', className: 'bg-blue-500/10 text-blue-600 border-blue-200' }
@@ -219,7 +233,7 @@ const ProcessDetail = () => {
                   )}
                 </div>
                 <h1 className="mt-1 text-xl font-bold text-card-foreground">{process.title}</h1>
-                <p className="mt-1 text-sm text-muted-foreground">{process.agency} • {process.city}/{process.state}</p>
+                <p className="mt-1 text-sm text-muted-foreground">{process.agency}{process.city ? ` • ${process.city}` : ''}{process.state ? `/${process.state}` : ''}</p>
               </div>
               <button onClick={toggleFavorite} className="shrink-0 text-muted-foreground hover:text-warning transition-colors">
                 <Star className={`h-5 w-5 ${savedProcess?.is_favorite ? 'fill-warning text-warning' : ''}`} />

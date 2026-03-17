@@ -45,7 +45,7 @@ export interface SearchFilters {
 
 export interface SourceStatus {
   name: string;
-  status: "ok" | "error" | "empty";
+  status: "ok" | "error" | "empty" | "disabled";
   message?: string;
 }
 
