@@ -176,7 +176,8 @@ function buildPncpQueries(filters: SearchFilters): { url: string; modalityCode: 
   }
 
   const page = filters.page || 1;
-  const tamanhoPagina = Math.max(10, filters.pageSize || 20);
+  // Pedir mais registros por modalidade para ter volume após filtragem local
+  const tamanhoPagina = Math.min(500, Math.max(50, filters.pageSize || 50));
 
   return modalityCodes.map(code => ({
     url: `${PNCP_BASE}/v1/contratacoes/publicacao?dataInicial=${dataInicial}&dataFinal=${dataFinal}&codigoModalidadeContratacao=${code}&pagina=${page}&tamanhoPagina=${tamanhoPagina}`,
