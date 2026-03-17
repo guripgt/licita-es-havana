@@ -117,8 +117,8 @@ const PNCP_MODALITY_MAP: Record<string, number> = {
   "Leilão": 1,
 };
 
-// Modalidades padrão para busca sem filtro (as mais comuns)
-const DEFAULT_MODALITY_CODES = [3, 5, 6, 7, 8];
+// Modalidades padrão para busca sem filtro – incluímos todas para máxima cobertura
+const DEFAULT_MODALITY_CODES = [1, 2, 3, 4, 5, 6, 7, 8, 9];
 
 const PNCP_ESFERA_MAP: Record<string, string> = {
   "F": "Federal",
@@ -156,11 +156,11 @@ function normalizePncpRecord(record: any): NormalizedProcess {
 /** Constrói URLs de consulta ao PNCP para cada modalidade */
 function buildPncpQueries(filters: SearchFilters): { url: string; modalityCode: number }[] {
   const now = new Date();
-  // Default: últimos 30 dias
-  const thirtyDaysAgo = new Date(now.getTime() - 30 * 24 * 60 * 60 * 1000);
+  // Default: últimos 60 dias para maior cobertura
+  const defaultDaysAgo = new Date(now.getTime() - 60 * 24 * 60 * 60 * 1000);
 
   const dataInicial = formatPncpDate(
-    filters.openDateStart || filters.closeDateStart || thirtyDaysAgo.toISOString().substring(0, 10)
+    filters.openDateStart || filters.closeDateStart || defaultDaysAgo.toISOString().substring(0, 10)
   );
   const dataFinal = formatPncpDate(
     filters.openDateEnd || filters.closeDateEnd || now.toISOString().substring(0, 10)
@@ -176,7 +176,8 @@ function buildPncpQueries(filters: SearchFilters): { url: string; modalityCode: 
   }
 
   const page = filters.page || 1;
-  const tamanhoPagina = Math.max(10, filters.pageSize || 20);
+  // Pedir mais registros por modalidade para ter volume após filtragem local
+  const tamanhoPagina = Math.min(500, Math.max(50, filters.pageSize || 50));
 
   return modalityCodes.map(code => ({
     url: `${PNCP_BASE}/v1/contratacoes/publicacao?dataInicial=${dataInicial}&dataFinal=${dataFinal}&codigoModalidadeContratacao=${code}&pagina=${page}&tamanhoPagina=${tamanhoPagina}`,
@@ -408,7 +409,25 @@ async function searchPublicProcesses(filters: SearchFilters): Promise<SearchResu
   // 4. Aplicar filtros locais (texto, UF, valor, etc.)
   allProcesses = applyLocalTextFilters(allProcesses, filters);
 
-  // 5. Ordenar por data de fechamento (mais próximas primeiro)
+  // 5. Filtrar apenas processos ativos (recebendo propostas ou closing_date > hoje)
+  if (filters.status && filters.status !== 'all') {
+    // Já filtrado em applyLocalTextFilters
+  } else {
+    // Por padrão, priorizar processos abertos/ativos
+    const today = new Date().toISOString().substring(0, 10);
+    allProcesses = allProcesses.filter(p => {
+      if (p.status) {
+        const sn = normalizeText(p.status);
+        // Excluir encerrados/homologados/revogados/anulados
+        if (sn.includes('encerrad') || sn.includes('homologad') || sn.includes('revogad') || sn.includes('anulad')) return false;
+      }
+      // Se tem closing_date e já passou, excluir
+      if (p.closing_date && p.closing_date < today) return false;
+      return true;
+    });
+  }
+
+  // 6. Ordenar por data de fechamento (mais próximas primeiro)
   allProcesses.sort((a, b) => {
     if (!a.closing_date && !b.closing_date) return 0;
     if (!a.closing_date) return 1;
@@ -418,11 +437,17 @@ async function searchPublicProcesses(filters: SearchFilters): Promise<SearchResu
 
   const demoMode = sources.filter(s => s.status !== 'disabled').every(s => s.status === "error");
 
+  // Paginação: retornar apenas o slice solicitado
+  const pageSize = filters.pageSize || 50;
+  const page = filters.page || 1;
+  const start = (page - 1) * pageSize;
+  const paginatedData = allProcesses.slice(start, start + pageSize);
+
   return {
-    data: allProcesses,
+    data: paginatedData,
     totalRecords: allProcesses.length,
-    page: filters.page || 1,
-    pageSize: filters.pageSize || 20,
+    page,
+    pageSize,
     sources,
     demoMode,
   };
