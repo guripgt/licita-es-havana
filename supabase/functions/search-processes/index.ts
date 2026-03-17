@@ -160,7 +160,7 @@ function buildPncpQueries(filters: SearchFilters): { url: string; modalityCode: 
   const defaultDaysAgo = new Date(now.getTime() - 60 * 24 * 60 * 60 * 1000);
 
   const dataInicial = formatPncpDate(
-    filters.openDateStart || filters.closeDateStart || thirtyDaysAgo.toISOString().substring(0, 10)
+    filters.openDateStart || filters.closeDateStart || defaultDaysAgo.toISOString().substring(0, 10)
   );
   const dataFinal = formatPncpDate(
     filters.openDateEnd || filters.closeDateEnd || now.toISOString().substring(0, 10)
