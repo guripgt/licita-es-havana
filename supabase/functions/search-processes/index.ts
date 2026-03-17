@@ -117,8 +117,8 @@ const PNCP_MODALITY_MAP: Record<string, number> = {
   "Leilão": 1,
 };
 
-// Modalidades padrão para busca sem filtro (as mais comuns)
-const DEFAULT_MODALITY_CODES = [3, 5, 6, 7, 8];
+// Modalidades padrão para busca sem filtro – incluímos todas para máxima cobertura
+const DEFAULT_MODALITY_CODES = [1, 2, 3, 4, 5, 6, 7, 8, 9];
 
 const PNCP_ESFERA_MAP: Record<string, string> = {
   "F": "Federal",
