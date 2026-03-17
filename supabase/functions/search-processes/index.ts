@@ -156,8 +156,8 @@ function normalizePncpRecord(record: any): NormalizedProcess {
 /** Constrói URLs de consulta ao PNCP para cada modalidade */
 function buildPncpQueries(filters: SearchFilters): { url: string; modalityCode: number }[] {
   const now = new Date();
-  // Default: últimos 30 dias
-  const thirtyDaysAgo = new Date(now.getTime() - 30 * 24 * 60 * 60 * 1000);
+  // Default: últimos 60 dias para maior cobertura
+  const defaultDaysAgo = new Date(now.getTime() - 60 * 24 * 60 * 60 * 1000);
 
   const dataInicial = formatPncpDate(
     filters.openDateStart || filters.closeDateStart || thirtyDaysAgo.toISOString().substring(0, 10)
