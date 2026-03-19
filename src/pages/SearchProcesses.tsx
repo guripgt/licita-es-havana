@@ -182,6 +182,11 @@ const SearchProcesses = () => {
   };
 
   const handleSearch = () => {
+    // Persist filters to localStorage
+    localStorage.setItem('licitacao_filtros', JSON.stringify({
+      searchText, excludeText, modality, openDateStart, openDateEnd,
+      closeDateStart, closeDateEnd, uf, city, agency, srp, minValue, maxValue, status,
+    }));
     setPage(1);
     fetchProcesses(1);
   };
