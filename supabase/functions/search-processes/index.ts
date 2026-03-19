@@ -130,10 +130,11 @@ const PNCP_ESFERA_MAP: Record<string, string> = {
 function normalizePncpRecord(record: any): NormalizedProcess {
   const orgao = record.orgaoEntidade || {};
   const unidade = record.unidadeOrgao || {};
+  const controlePNCP = record.numeroControlePNCP || '';
   
   return {
-    id: `pncp_${record.numeroControlePNCP || `${orgao.cnpj}_${record.anoCompra}_${record.sequencialCompra}`}`,
-    external_id: record.numeroControlePNCP || `${orgao.cnpj}-${record.anoCompra}-${record.sequencialCompra}`,
+    id: `pncp_${controlePNCP || `${orgao.cnpj}_${record.anoCompra}_${record.sequencialCompra}`}`,
+    external_id: controlePNCP || `${orgao.cnpj}-${record.anoCompra}-${record.sequencialCompra}`,
     source: "PNCP",
     title: record.objetoCompra || "Sem título",
     object_description: record.objetoCompra || "",
@@ -149,15 +150,19 @@ function normalizePncpRecord(record: any): NormalizedProcess {
     closing_date: record.dataEncerramentoProposta || null,
     status: record.situacaoCompraNome || null,
     source_portal: "PNCP",
-    external_url: record.linkSistemaOrigem || `https://pncp.gov.br/app/editais/${record.numeroControlePNCP}`,
+    // URL correta do PNCP: usar numeroControlePNCP como identificador
+    external_url: record.linkSistemaOrigem || (controlePNCP ? `https://pncp.gov.br/app/editais/${controlePNCP}` : null),
   };
 }
 
-/** Constrói URLs de consulta ao PNCP para cada modalidade */
+/** Constrói URLs de consulta ao PNCP para cada modalidade.
+ * NOTA: PNCP exige dataInicial e dataFinal. Quando o usuário não informa datas,
+ * usamos os últimos 180 dias para máxima cobertura de resultados.
+ */
 function buildPncpQueries(filters: SearchFilters): { url: string; modalityCode: number }[] {
   const now = new Date();
-  // Default: últimos 60 dias para maior cobertura
-  const defaultDaysAgo = new Date(now.getTime() - 60 * 24 * 60 * 60 * 1000);
+  // Default: últimos 180 dias para máxima cobertura (PNCP exige datas obrigatórias)
+  const defaultDaysAgo = new Date(now.getTime() - 180 * 24 * 60 * 60 * 1000);
 
   const dataInicial = formatPncpDate(
     filters.openDateStart || filters.closeDateStart || defaultDaysAgo.toISOString().substring(0, 10)

@@ -30,21 +30,29 @@ const SearchProcesses = () => {
   const [pageSize, setPageSize] = useState<number>(50);
   const [hasSearched, setHasSearched] = useState(false);
 
+  // Restore filters from localStorage
+  const savedFilters = (() => {
+    try {
+      const raw = localStorage.getItem('licitacao_filtros');
+      return raw ? JSON.parse(raw) : {};
+    } catch { return {}; }
+  })();
+
   // Filters
-  const [searchText, setSearchText] = useState('');
-  const [excludeText, setExcludeText] = useState('');
-  const [modality, setModality] = useState('all');
-  const [openDateStart, setOpenDateStart] = useState('');
-  const [openDateEnd, setOpenDateEnd] = useState('');
-  const [closeDateStart, setCloseDateStart] = useState('');
-  const [closeDateEnd, setCloseDateEnd] = useState('');
-  const [uf, setUf] = useState('all');
-  const [city, setCity] = useState('');
-  const [agency, setAgency] = useState('');
-  const [srp, setSrp] = useState('all');
-  const [minValue, setMinValue] = useState('');
-  const [maxValue, setMaxValue] = useState('');
-  const [status, setStatus] = useState('all');
+  const [searchText, setSearchText] = useState(savedFilters.searchText || '');
+  const [excludeText, setExcludeText] = useState(savedFilters.excludeText || '');
+  const [modality, setModality] = useState(savedFilters.modality || 'all');
+  const [openDateStart, setOpenDateStart] = useState(savedFilters.openDateStart || '');
+  const [openDateEnd, setOpenDateEnd] = useState(savedFilters.openDateEnd || '');
+  const [closeDateStart, setCloseDateStart] = useState(savedFilters.closeDateStart || '');
+  const [closeDateEnd, setCloseDateEnd] = useState(savedFilters.closeDateEnd || '');
+  const [uf, setUf] = useState(savedFilters.uf || 'all');
+  const [city, setCity] = useState(savedFilters.city || '');
+  const [agency, setAgency] = useState(savedFilters.agency || '');
+  const [srp, setSrp] = useState(savedFilters.srp || 'all');
+  const [minValue, setMinValue] = useState(savedFilters.minValue || '');
+  const [maxValue, setMaxValue] = useState(savedFilters.maxValue || '');
+  const [status, setStatus] = useState(savedFilters.status || 'all');
 
   const buildFilters = useCallback((p: number): SearchFilters => ({
     searchText: searchText || undefined,
@@ -171,9 +179,15 @@ const SearchProcesses = () => {
     setSearchText(''); setExcludeText(''); setModality('all'); setOpenDateStart(''); setOpenDateEnd('');
     setCloseDateStart(''); setCloseDateEnd(''); setUf('all'); setCity(''); setAgency('');
     setSrp('all'); setMinValue(''); setMaxValue(''); setStatus('all');
+    localStorage.removeItem('licitacao_filtros');
   };
 
   const handleSearch = () => {
+    // Persist filters to localStorage
+    localStorage.setItem('licitacao_filtros', JSON.stringify({
+      searchText, excludeText, modality, openDateStart, openDateEnd,
+      closeDateStart, closeDateEnd, uf, city, agency, srp, minValue, maxValue, status,
+    }));
     setPage(1);
     fetchProcesses(1);
   };
