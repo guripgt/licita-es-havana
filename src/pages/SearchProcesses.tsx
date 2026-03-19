@@ -179,6 +179,7 @@ const SearchProcesses = () => {
     setSearchText(''); setExcludeText(''); setModality('all'); setOpenDateStart(''); setOpenDateEnd('');
     setCloseDateStart(''); setCloseDateEnd(''); setUf('all'); setCity(''); setAgency('');
     setSrp('all'); setMinValue(''); setMaxValue(''); setStatus('all');
+    localStorage.removeItem('licitacao_filtros');
   };
 
   const handleSearch = () => {
