@@ -445,12 +445,12 @@ async function searchPublicProcesses(filters: SearchFilters): Promise<SearchResu
   // Paginação: retornar apenas o slice solicitado
   const pageSize = filters.pageSize || 50;
   const page = filters.page || 1;
-  const start = (page - 1) * pageSize;
-  const paginatedData = allProcesses.slice(start, start + pageSize);
+  //const start = (page - 1) * pageSize;
+  //const paginatedData = allProcesses.slice(start, start + pageSize);
 
   return {
-    data: paginatedData,
-    totalRecords: allProcesses.length,
+    data: allProcesses, // <- Altere de 'paginatedData' para 'allProcesses'
+    totalRecords: allProcesses.length, // Deixe o total dinâmico para a UI saber se pede mais
     page,
     pageSize,
     sources,
