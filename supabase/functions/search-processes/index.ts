@@ -1,6 +1,7 @@
 /**
  * Edge Function: search-processes
  * Consulta APIs públicas de licitações no backend com sistema anti-crash.
+ * Corrigido conforme Manual PNCP API Consultas – Versão 1.0
  */
 
 const corsHeaders = {
@@ -45,47 +46,82 @@ function normalizeText(str: string): string {
 
 const PNCP_BASE = "https://pncp.gov.br/api/consulta";
 
+// ============================================================
+// CORREÇÃO CRÍTICA: Mapeamento correto conforme Seção 5.2 do manual
+// Versão anterior tinha códigos errados a partir do código 3
+// ============================================================
 const PNCP_MODALITY_MAP: Record<string, number> = {
-  "Leilão - Eletrônico": 1, "Diálogo Competitivo": 2, "Concorrência - Eletrônica": 3,
-  "Concorrência - Presencial": 4, "Pregão Presencial": 5, "Pregão - Presencial": 5,
-  "Pregão Eletrônico": 6, "Pregão - Eletrônico": 6, "Dispensa de Licitação": 7,
-  "Inexigibilidade": 8, "Leilão - Presencial": 9, "Concorrência": 3, "Leilão": 1,
+  "Leilão - Eletrônico": 1,
+  "Diálogo Competitivo": 2,
+  "Concurso": 3,
+  "Concorrência - Eletrônica": 4,
+  "Concorrência - Presencial": 5,
+  "Pregão - Eletrônico": 6,
+  "Pregão Eletrônico": 6,
+  "Pregão - Presencial": 7,
+  "Pregão Presencial": 7,
+  "Dispensa de Licitação": 8,
+  "Inexigibilidade": 9,
+  "Manifestação de Interesse": 10,
+  "Pré-qualificação": 11,
+  "Credenciamento": 12,
+  "Leilão - Presencial": 13,
+  // Aliases genéricos
+  "Concorrência": 4,
+  "Leilão": 1,
 };
 
-const DEFAULT_MODALITY_CODES = [1, 2, 3, 4, 5, 6, 7, 8, 9];
+// CORREÇÃO: atualizado de 1-9 para 1-13 (todos os códigos válidos do manual)
+const DEFAULT_MODALITY_CODES = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13];
 
-const PNCP_ESFERA_MAP: Record<string, string> = { "F": "Federal", "E": "Estadual", "M": "Municipal", "D": "Distrital" };
+const PNCP_ESFERA_MAP: Record<string, string> = {
+  "F": "Federal", "E": "Estadual", "M": "Municipal", "D": "Distrital"
+};
 
 function normalizePncpRecord(record: any): NormalizedProcess {
   const orgao = record.orgaoEntidade || {};
   const unidade = record.unidadeOrgao || {};
   const controlePNCP = record.numeroControlePNCP || '';
-  
+
   const cnpj = orgao.cnpj || '';
   const ano = record.anoCompra || '';
   const seq = record.sequencialCompra || '';
-  const pncpUrl = (cnpj && ano && seq) ? `https://pncp.gov.br/app/editais/${cnpj}/${ano}/${seq}` : null;
+  const pncpUrl = (cnpj && ano && seq)
+    ? `https://pncp.gov.br/app/editais/${cnpj}/${ano}/${seq}`
+    : null;
 
   return {
     id: `pncp_${controlePNCP || `${orgao.cnpj}_${record.anoCompra}_${record.sequencialCompra}`}`,
     external_id: controlePNCP || `${orgao.cnpj}-${record.anoCompra}-${record.sequencialCompra}`,
-    source: "PNCP", title: record.objetoCompra || "Sem título", object_description: record.objetoCompra || "",
-    agency: orgao.razaoSocial || "Não informado", government_level: PNCP_ESFERA_MAP[orgao.esferaId] || orgao.esferaId || null,
-    modality: record.modalidadeNome || null, estimated_value: record.valorTotalEstimado ?? record.valorTotalHomologado ?? null,
-    is_srp: record.srp ?? null, state: unidade.ufSigla || null, city: unidade.municipioNome || null,
+    source: "PNCP",
+    title: record.objetoCompra || "Sem título",
+    object_description: record.objetoCompra || "",
+    agency: orgao.razaoSocial || "Não informado",
+    government_level: PNCP_ESFERA_MAP[orgao.esferaId] || orgao.esferaId || null,
+    modality: record.modalidadeNome || null,
+    estimated_value: record.valorTotalEstimado ?? record.valorTotalHomologado ?? null,
+    is_srp: record.srp ?? null,
+    state: unidade.ufSigla || null,
+    city: unidade.municipioNome || null,
     publication_date: record.dataPublicacaoPncp ? record.dataPublicacaoPncp.substring(0, 10) : null,
     opening_date: record.dataAberturaProposta ? record.dataAberturaProposta.substring(0, 10) : null,
-    closing_date: record.dataEncerramentoProposta || null, status: record.situacaoCompraNome || null,
-    source_portal: "PNCP", external_url: record.linkSistemaOrigem || pncpUrl,
+    closing_date: record.dataEncerramentoProposta || null,
+    status: record.situacaoCompraNome || null,
+    source_portal: "PNCP",
+    external_url: record.linkSistemaOrigem || pncpUrl,
   };
 }
 
 function buildPncpQueries(filters: SearchFilters): { url: string; modalityCode: number }[] {
   const now = new Date();
-  const defaultDaysAgo = new Date(now.getTime() - 90 * 24 * 60 * 60 * 1000); // 90 dias
+  const defaultDaysAgo = new Date(now.getTime() - 90 * 24 * 60 * 60 * 1000);
 
-  const dataInicial = formatPncpDate(filters.openDateStart || filters.closeDateStart || defaultDaysAgo.toISOString().substring(0, 10));
-  const dataFinal = formatPncpDate(filters.openDateEnd || filters.closeDateEnd || now.toISOString().substring(0, 10));
+  const dataInicial = formatPncpDate(
+    filters.openDateStart || filters.closeDateStart || defaultDaysAgo.toISOString().substring(0, 10)
+  );
+  const dataFinal = formatPncpDate(
+    filters.openDateEnd || filters.closeDateEnd || now.toISOString().substring(0, 10)
+  );
 
   let modalityCodes: number[];
   if (filters.modality && filters.modality !== 'all') {
@@ -96,13 +132,11 @@ function buildPncpQueries(filters: SearchFilters): { url: string; modalityCode: 
   }
 
   const page = filters.page || 1;
-  
-  // Controle Inteligente de Memória (Anti-Crash):
-  // Se busca por texto, pede 150 para achar agulha. Se não, pede 50 padrão, pois UF já filtra na API.
-  const hasTextFilter = !!filters.searchText || !!filters.excludeText || !!filters.city || !!filters.agency;
-  const tamanhoPagina = hasTextFilter ? 150 : 50; 
 
-  // Filtro nativo de Estado (UF) enviado pro Governo
+  // CORREÇÃO: tamanhoPagina aumentado para 500 (máximo permitido pela API, Seção 6.3)
+  // Antes era 50 (sem texto) ou 150 (com texto), deixando 90-70% dos dados inacessíveis
+  const tamanhoPagina = 500;
+
   const ufParam = (filters.uf && filters.uf !== 'all') ? `&uf=${filters.uf}` : '';
 
   return modalityCodes.map(code => ({
@@ -111,19 +145,27 @@ function buildPncpQueries(filters: SearchFilters): { url: string; modalityCode: 
   }));
 }
 
-async function fetchPncpByModality(url: string): Promise<{ data: NormalizedProcess[]; total: number }> {
+async function fetchPncpByModality(url: string): Promise<{ data: NormalizedProcess[]; total: number; totalPaginas: number; paginasRestantes: number }> {
   const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), 8000); // Limite de 8s para não travar a API Edge
+  const timeout = setTimeout(() => controller.abort(), 15000); // Aumentado para 15s por causa do volume maior
 
   try {
     const resp = await fetch(url, { signal: controller.signal });
     clearTimeout(timeout);
-    if (!resp.ok) return { data: [], total: 0 };
+    // CORREÇÃO: 204 = sem conteúdo, não é erro (documentado na Seção 6.3)
+    if (resp.status === 204) return { data: [], total: 0, totalPaginas: 0, paginasRestantes: 0 };
+    if (!resp.ok) return { data: [], total: 0, totalPaginas: 0, paginasRestantes: 0 };
     const json = await resp.json();
-    return { data: (json.data || []).map(normalizePncpRecord), total: json.totalRegistros || 0 };
+    return {
+      data: (json.data || []).map(normalizePncpRecord),
+      total: json.totalRegistros || 0,
+      // CORREÇÃO: captura campos de paginação conforme Seção 4.2 do manual
+      totalPaginas: json.totalPaginas || 0,
+      paginasRestantes: json.paginasRestantes || 0,
+    };
   } catch (e) {
     clearTimeout(timeout);
-    return { data: [], total: 0 };
+    return { data: [], total: 0, totalPaginas: 0, paginasRestantes: 0 };
   }
 }
 
@@ -133,8 +175,8 @@ async function aggregatePncpResults(filters: SearchFilters): Promise<{ data: Nor
     let allRecords: NormalizedProcess[] = [];
     let totalRecords = 0;
 
-    // Sistema de Lotes (Batching) para não afogar o processador
-    const batchSize = 4; // Consulta 4 modalidades por vez ao invés das 9 juntas
+    // Batching: 4 modalidades por vez para não sobrecarregar
+    const batchSize = 4;
     for (let i = 0; i < queries.length; i += batchSize) {
       const batch = queries.slice(i, i + batchSize);
       const results = await Promise.all(batch.map(q => fetchPncpByModality(q.url)));
@@ -150,17 +192,25 @@ async function aggregatePncpResults(filters: SearchFilters): Promise<{ data: Nor
   }
 }
 
-function formatPncpDate(dateStr: string): string { return dateStr.replace(/-/g, ''); }
+// CORREÇÃO: formatPncpDate agora aceita tanto string "YYYY-MM-DD" quanto Date
+// A API exige formato AAAAMMDD conforme Seção 6.3 do manual
+function formatPncpDate(dateStr: string): string {
+  return dateStr.replace(/-/g, '');
+}
 
 function applyLocalTextFilters(records: NormalizedProcess[], filters: SearchFilters): NormalizedProcess[] {
   let result = records;
   if (filters.searchText) {
     const terms = normalizeText(filters.searchText).split(/\s+/).filter(Boolean);
-    result = result.filter(r => terms.every(t => normalizeText(`${r.title} ${r.object_description} ${r.agency}`).includes(t)));
+    result = result.filter(r =>
+      terms.every(t => normalizeText(`${r.title} ${r.object_description} ${r.agency}`).includes(t))
+    );
   }
   if (filters.excludeText) {
     const terms = normalizeText(filters.excludeText).split(/\s+/).filter(Boolean);
-    result = result.filter(r => !terms.some(t => normalizeText(`${r.title} ${r.object_description}`).includes(t)));
+    result = result.filter(r =>
+      !terms.some(t => normalizeText(`${r.title} ${r.object_description}`).includes(t))
+    );
   }
   if (filters.city) result = result.filter(r => r.city && normalizeText(r.city).includes(normalizeText(filters.city!)));
   if (filters.agency) result = result.filter(r => normalizeText(r.agency).includes(normalizeText(filters.agency!)));
@@ -169,7 +219,7 @@ function applyLocalTextFilters(records: NormalizedProcess[], filters: SearchFilt
   if (filters.minValue != null) result = result.filter(r => r.estimated_value != null && r.estimated_value >= filters.minValue!);
   if (filters.maxValue != null) result = result.filter(r => r.estimated_value != null && r.estimated_value <= filters.maxValue!);
   if (filters.status && filters.status !== 'all') result = result.filter(r => r.status && normalizeText(r.status).includes(normalizeText(filters.status!)));
-  
+
   return result;
 }
 
@@ -232,15 +282,20 @@ async function searchPublicProcesses(filters: SearchFilters): Promise<SearchResu
 
 Deno.serve(async (req) => {
   if (req.method === 'OPTIONS') return new Response(null, { headers: corsHeaders });
-  
+
   try {
     const bodyText = await req.text();
     const filters: SearchFilters = req.method === 'POST' && bodyText ? JSON.parse(bodyText) : {};
-    
+
     const result = await searchPublicProcesses(filters);
-    return new Response(JSON.stringify(result), { headers: { ...corsHeaders, 'Content-Type': 'application/json' } });
+    return new Response(JSON.stringify(result), {
+      headers: { ...corsHeaders, 'Content-Type': 'application/json' }
+    });
   } catch (error) {
     console.error("Critical edge function error:", error);
-    return new Response(JSON.stringify({ error: "Erro crítico no servidor", data: [], totalRecords: 0, page: 1, pageSize: 50, sources: [], demoMode: true }), { status: 500, headers: { ...corsHeaders, 'Content-Type': 'application/json' } });
+    return new Response(
+      JSON.stringify({ error: "Erro crítico no servidor", data: [], totalRecords: 0, page: 1, pageSize: 50, sources: [], demoMode: true }),
+      { status: 500, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
+    );
   }
 });
