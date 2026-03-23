@@ -98,7 +98,13 @@ const SearchProcesses = () => {
     setFavorites(new Set((data || []).map((d: any) => d.public_process_id)));
   };
 
-  useEffect(() => { loadFavorites(); }, [profile?.company_id]);
+  useEffect(() => {
+    // Se existem filtros salvos (ex: usuário voltou da página de detalhes) e a busca ainda não foi feita
+    const hasFilters = Object.keys(savedFilters).length > 0;
+    if (hasFilters && !hasSearched && !loading) {
+      fetchProcesses(1);
+    }
+  }, []); // Executa apenas no mount do componente
 
   const upsertPublicProcess = async (process: NormalizedProcess): Promise<string> => {
     const { data: existing } = await supabase
