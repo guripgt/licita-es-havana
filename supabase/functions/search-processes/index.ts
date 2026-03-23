@@ -132,6 +132,13 @@ function normalizePncpRecord(record: any): NormalizedProcess {
   const unidade = record.unidadeOrgao || {};
   const controlePNCP = record.numeroControlePNCP || '';
   
+  // --- LÓGICA CORRIGIDA DA URL AQUI ---
+  const cnpj = orgao.cnpj || '';
+  const ano = record.anoCompra || '';
+  const seq = record.sequencialCompra || '';
+  const pncpUrl = (cnpj && ano && seq) ? `https://pncp.gov.br/app/editais/${cnpj}/${ano}/${seq}` : null;
+  // ------------------------------------
+  
   return {
     id: `pncp_${controlePNCP || `${orgao.cnpj}_${record.anoCompra}_${record.sequencialCompra}`}`,
     external_id: controlePNCP || `${orgao.cnpj}-${record.anoCompra}-${record.sequencialCompra}`,
@@ -150,8 +157,8 @@ function normalizePncpRecord(record: any): NormalizedProcess {
     closing_date: record.dataEncerramentoProposta || null,
     status: record.situacaoCompraNome || null,
     source_portal: "PNCP",
-    // URL correta do PNCP: usar numeroControlePNCP como identificador
-    external_url: record.linkSistemaOrigem || (controlePNCP ? `https://pncp.gov.br/app/editais/${controlePNCP}` : null),
+    // --- LINHA DA URL ATUALIZADA AQUI ---
+    external_url: record.linkSistemaOrigem || pncpUrl,
   };
 }
 
