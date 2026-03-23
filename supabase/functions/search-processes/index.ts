@@ -1,24 +1,6 @@
 /**
  * Edge Function: search-processes
- * 
- * Consulta APIs públicas de licitações no backend, normaliza e retorna formato unificado.
- * 
- * FONTE PRINCIPAL: PNCP (https://pncp.gov.br/api/consulta/v1/contratacoes/publicacao)
- *   - Params: dataInicial, dataFinal (YYYYMMDD), codigoModalidadeContratacao, pagina, tamanhoPagina
- *   - codigoModalidadeContratacao é OBRIGATÓRIO → iteramos múltiplas modalidades quando não filtrado
- *   - Não suporta full-text search → filtro textual aplicado server-side após consulta
- *   - Não suporta filtro por UF, valor, cidade → filtrado server-side
- * 
- * FONTE SECUNDÁRIA (opcional): Compras.gov (http://compras.dados.gov.br/licitacoes/v1/licitacoes.json)
- *   - API instável, frequentemente 503. Não bloqueia resultado principal.
- *   - Desativável via COMPRAS_GOV_ENABLED flag
- * 
- * ESTRATÉGIA DE BUSCA TEXTUAL:
- *   A busca por palavra-chave é feita localmente (server-side) porque o PNCP não oferece
- *   full-text search no endpoint de publicação. O fluxo é:
- *   1. Consultar PNCP com filtros suportados (data, modalidade)
- *   2. Normalizar resultados
- *   3. Aplicar filtro textual em title + object_description + agency (case-insensitive, sem acentos)
+ * * Consulta APIs públicas de licitações no backend, normaliza e retorna formato unificado.
  */
 
 const corsHeaders = {
@@ -26,12 +8,7 @@ const corsHeaders = {
   'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type, x-supabase-client-platform, x-supabase-client-platform-version, x-supabase-client-runtime, x-supabase-client-runtime-version',
 };
 
-// Feature flag: set to false to disable Compras.gov entirely
-const COMPRAS_GOV_ENABLED = false; // Desabilitado por instabilidade frequente
-
-// ============================================================
-// TYPES
-// ============================================================
+const COMPRAS_GOV_ENABLED = false;
 
 interface SearchFilters {
   searchText?: string;
@@ -82,10 +59,6 @@ interface SearchResult {
   demoMode: boolean;
 }
 
-// ============================================================
-// TEXT NORMALIZATION (remove acentos para comparação)
-// ============================================================
-
 function removeAccents(str: string): string {
   return str.normalize("NFD").replace(/[\u0300-\u036f]/g, "");
 }
@@ -94,13 +67,8 @@ function normalizeText(str: string): string {
   return removeAccents(str).toLowerCase().trim();
 }
 
-// ============================================================
-// PNCP SERVICE
-// ============================================================
-
 const PNCP_BASE = "https://pncp.gov.br/api/consulta";
 
-// Mapa UI label → código PNCP (obrigatório na API)
 const PNCP_MODALITY_MAP: Record<string, number> = {
   "Leilão - Eletrônico": 1,
   "Diálogo Competitivo": 2,
@@ -117,7 +85,6 @@ const PNCP_MODALITY_MAP: Record<string, number> = {
   "Leilão": 1,
 };
 
-// Modalidades padrão para busca sem filtro – incluímos todas para máxima cobertura
 const DEFAULT_MODALITY_CODES = [1, 2, 3, 4, 5, 6, 7, 8, 9];
 
 const PNCP_ESFERA_MAP: Record<string, string> = {
@@ -132,13 +99,12 @@ function normalizePncpRecord(record: any): NormalizedProcess {
   const unidade = record.unidadeOrgao || {};
   const controlePNCP = record.numeroControlePNCP || '';
   
-  // --- LÓGICA CORRIGIDA DA URL AQUI ---
+  // URL CORRIGIDA AQUI
   const cnpj = orgao.cnpj || '';
   const ano = record.anoCompra || '';
   const seq = record.sequencialCompra || '';
   const pncpUrl = (cnpj && ano && seq) ? `https://pncp.gov.br/app/editais/${cnpj}/${ano}/${seq}` : null;
-  // ------------------------------------
-  
+
   return {
     id: `pncp_${controlePNCP || `${orgao.cnpj}_${record.anoCompra}_${record.sequencialCompra}`}`,
     external_id: controlePNCP || `${orgao.cnpj}-${record.anoCompra}-${record.sequencialCompra}`,
@@ -157,18 +123,12 @@ function normalizePncpRecord(record: any): NormalizedProcess {
     closing_date: record.dataEncerramentoProposta || null,
     status: record.situacaoCompraNome || null,
     source_portal: "PNCP",
-    // --- LINHA DA URL ATUALIZADA AQUI ---
     external_url: record.linkSistemaOrigem || pncpUrl,
   };
 }
 
-/** Constrói URLs de consulta ao PNCP para cada modalidade.
- * NOTA: PNCP exige dataInicial e dataFinal. Quando o usuário não informa datas,
- * usamos os últimos 180 dias para máxima cobertura de resultados.
- */
 function buildPncpQueries(filters: SearchFilters): { url: string; modalityCode: number }[] {
   const now = new Date();
-  // Default: últimos 180 dias para máxima cobertura (PNCP exige datas obrigatórias)
   const defaultDaysAgo = new Date(now.getTime() - 180 * 24 * 60 * 60 * 1000);
 
   const dataInicial = formatPncpDate(
@@ -183,12 +143,10 @@ function buildPncpQueries(filters: SearchFilters): { url: string; modalityCode: 
     const code = PNCP_MODALITY_MAP[filters.modality];
     modalityCodes = code ? [code] : DEFAULT_MODALITY_CODES;
   } else {
-    // Sem modalidade selecionada: buscar em TODAS as modalidades padrão
     modalityCodes = DEFAULT_MODALITY_CODES;
   }
 
   const page = filters.page || 1;
-  // Pedir mais registros por modalidade para ter volume após filtragem local
   const tamanhoPagina = Math.min(500, Math.max(50, filters.pageSize || 50));
 
   return modalityCodes.map(code => ({
@@ -197,7 +155,6 @@ function buildPncpQueries(filters: SearchFilters): { url: string; modalityCode: 
   }));
 }
 
-/** Busca resultados de uma modalidade específica no PNCP */
 async function fetchPncpByModality(url: string): Promise<{ data: NormalizedProcess[]; total: number }> {
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), 15000);
@@ -221,7 +178,6 @@ async function fetchPncpByModality(url: string): Promise<{ data: NormalizedProce
   }
 }
 
-/** Agrega resultados de múltiplas modalidades PNCP */
 async function aggregatePncpResults(filters: SearchFilters): Promise<{ data: NormalizedProcess[]; total: number; error?: string }> {
   try {
     const queries = buildPncpQueries(filters);
@@ -245,10 +201,6 @@ async function aggregatePncpResults(filters: SearchFilters): Promise<{ data: Nor
 function formatPncpDate(dateStr: string): string {
   return dateStr.replace(/-/g, '');
 }
-
-// ============================================================
-// COMPRAS.GOV SERVICE (opcional, instável)
-// ============================================================
 
 const COMPRAS_GOV_BASE = "http://compras.dados.gov.br/licitacoes/v1";
 
@@ -305,15 +257,9 @@ async function fetchComprasGov(filters: SearchFilters): Promise<{ data: Normaliz
   }
 }
 
-// ============================================================
-// FILTROS LOCAIS (server-side, pós-consulta)
-// Necessários porque as APIs externas não suportam todos os filtros
-// ============================================================
-
 function applyLocalTextFilters(records: NormalizedProcess[], filters: SearchFilters): NormalizedProcess[] {
   let result = records;
 
-  // Busca textual: normaliza texto (remove acentos, lowercase) e busca em title + description + agency
   if (filters.searchText) {
     const terms = normalizeText(filters.searchText).split(/\s+/).filter(Boolean);
     result = result.filter(r => {
@@ -322,7 +268,6 @@ function applyLocalTextFilters(records: NormalizedProcess[], filters: SearchFilt
     });
   }
 
-  // Excluir termos
   if (filters.excludeText) {
     const terms = normalizeText(filters.excludeText).split(/\s+/).filter(Boolean);
     result = result.filter(r => {
@@ -331,7 +276,6 @@ function applyLocalTextFilters(records: NormalizedProcess[], filters: SearchFilt
     });
   }
 
-  // UF (PNCP não filtra por UF nativamente)
   if (filters.uf && filters.uf !== 'all') {
     result = result.filter(r => r.state === filters.uf);
   }
@@ -367,10 +311,6 @@ function applyLocalTextFilters(records: NormalizedProcess[], filters: SearchFilt
   return result;
 }
 
-// ============================================================
-// DEDUPLICATION
-// ============================================================
-
 function dedupeNormalizedProcesses(processes: NormalizedProcess[]): NormalizedProcess[] {
   const seen = new Map<string, NormalizedProcess>();
   for (const p of processes) {
@@ -380,15 +320,10 @@ function dedupeNormalizedProcesses(processes: NormalizedProcess[]): NormalizedPr
   return Array.from(seen.values());
 }
 
-// ============================================================
-// AGGREGATOR
-// ============================================================
-
 async function searchPublicProcesses(filters: SearchFilters): Promise<SearchResult> {
   const sources: SearchResult["sources"] = [];
   let allProcesses: NormalizedProcess[] = [];
 
-  // 1. PNCP (fonte principal)
   const pncpResult = await aggregatePncpResults(filters);
 
   if (pncpResult.error) {
@@ -400,7 +335,6 @@ async function searchPublicProcesses(filters: SearchFilters): Promise<SearchResu
     allProcesses.push(...pncpResult.data);
   }
 
-  // 2. Compras.gov (fonte secundária, opcional, não-bloqueante)
   if (COMPRAS_GOV_ENABLED) {
     const cgResult = await fetchComprasGov(filters);
     if (cgResult.error) {
@@ -415,31 +349,23 @@ async function searchPublicProcesses(filters: SearchFilters): Promise<SearchResu
     sources.push({ name: "Compras.gov", status: "disabled", message: "Fonte desabilitada temporariamente" });
   }
 
-  // 3. Deduplicar
   allProcesses = dedupeNormalizedProcesses(allProcesses);
-
-  // 4. Aplicar filtros locais (texto, UF, valor, etc.)
   allProcesses = applyLocalTextFilters(allProcesses, filters);
 
-  // 5. Filtrar apenas processos ativos (recebendo propostas ou closing_date > hoje)
   if (filters.status && filters.status !== 'all') {
-    // Já filtrado em applyLocalTextFilters
+    // Já filtrado
   } else {
-    // Por padrão, priorizar processos abertos/ativos
     const today = new Date().toISOString().substring(0, 10);
     allProcesses = allProcesses.filter(p => {
       if (p.status) {
         const sn = normalizeText(p.status);
-        // Excluir encerrados/homologados/revogados/anulados
         if (sn.includes('encerrad') || sn.includes('homologad') || sn.includes('revogad') || sn.includes('anulad')) return false;
       }
-      // Se tem closing_date e já passou, excluir
       if (p.closing_date && p.closing_date < today) return false;
       return true;
     });
   }
 
-  // 6. Ordenar por data de fechamento (mais próximas primeiro)
   allProcesses.sort((a, b) => {
     if (!a.closing_date && !b.closing_date) return 0;
     if (!a.closing_date) return 1;
@@ -449,25 +375,19 @@ async function searchPublicProcesses(filters: SearchFilters): Promise<SearchResu
 
   const demoMode = sources.filter(s => s.status !== 'disabled').every(s => s.status === "error");
 
-  // Paginação: retornar apenas o slice solicitado
   const pageSize = filters.pageSize || 50;
   const page = filters.page || 1;
-  //const start = (page - 1) * pageSize;
-  //const paginatedData = allProcesses.slice(start, start + pageSize);
 
+  // PAGINAÇÃO CORRIGIDA AQUI: Retorna todos os dados que sobreviveram aos filtros locais
   return {
-    data: allProcesses, // <- Altere de 'paginatedData' para 'allProcesses'
-    totalRecords: allProcesses.length, // Deixe o total dinâmico para a UI saber se pede mais
+    data: allProcesses,
+    totalRecords: allProcesses.length,
     page,
     pageSize,
     sources,
     demoMode,
   };
 }
-
-// ============================================================
-// MAIN HANDLER
-// ============================================================
 
 Deno.serve(async (req) => {
   if (req.method === 'OPTIONS') {
