@@ -1,6 +1,6 @@
 /**
  * Edge Function: search-processes
- * * Consulta APIs públicas de licitações no backend, normaliza e retorna formato unificado.
+ * Consulta APIs públicas de licitações no backend, normaliza e retorna formato unificado.
  */
 
 const corsHeaders = {
@@ -99,7 +99,7 @@ function normalizePncpRecord(record: any): NormalizedProcess {
   const unidade = record.unidadeOrgao || {};
   const controlePNCP = record.numeroControlePNCP || '';
   
-  // URL CORRIGIDA AQUI
+  // LÓGICA CORRIGIDA DA URL AQUI
   const cnpj = orgao.cnpj || '';
   const ano = record.anoCompra || '';
   const seq = record.sequencialCompra || '';
@@ -129,7 +129,8 @@ function normalizePncpRecord(record: any): NormalizedProcess {
 
 function buildPncpQueries(filters: SearchFilters): { url: string; modalityCode: number }[] {
   const now = new Date();
-  const defaultDaysAgo = new Date(now.getTime() - 180 * 24 * 60 * 60 * 1000);
+  // Busca dos últimos 60 dias por padrão
+  const defaultDaysAgo = new Date(now.getTime() - 60 * 24 * 60 * 60 * 1000);
 
   const dataInicial = formatPncpDate(
     filters.openDateStart || filters.closeDateStart || defaultDaysAgo.toISOString().substring(0, 10)
@@ -147,10 +148,13 @@ function buildPncpQueries(filters: SearchFilters): { url: string; modalityCode: 
   }
 
   const page = filters.page || 1;
-  const tamanhoPagina = Math.min(500, Math.max(50, filters.pageSize || 50));
+  const tamanhoPagina = 500; // Limite máximo validado pelo manual oficial do PNCP
+
+  // Filtro nativo de Estado (UF) adicionado direto na URL da API
+  const ufParam = (filters.uf && filters.uf !== 'all') ? `&uf=${filters.uf}` : '';
 
   return modalityCodes.map(code => ({
-    url: `${PNCP_BASE}/v1/contratacoes/publicacao?dataInicial=${dataInicial}&dataFinal=${dataFinal}&codigoModalidadeContratacao=${code}&pagina=${page}&tamanhoPagina=${tamanhoPagina}`,
+    url: `${PNCP_BASE}/v1/contratacoes/publicacao?dataInicial=${dataInicial}&dataFinal=${dataFinal}&codigoModalidadeContratacao=${code}&pagina=${page}&tamanhoPagina=${tamanhoPagina}${ufParam}`,
     modalityCode: code,
   }));
 }
@@ -202,61 +206,6 @@ function formatPncpDate(dateStr: string): string {
   return dateStr.replace(/-/g, '');
 }
 
-const COMPRAS_GOV_BASE = "http://compras.dados.gov.br/licitacoes/v1";
-
-function normalizeComprasGovRecord(record: any): NormalizedProcess {
-  return {
-    id: `compras_gov_${record.identificador || record.numero_aviso}`,
-    external_id: String(record.identificador || record.numero_aviso || ""),
-    source: "COMPRAS_GOV",
-    title: record.objeto || "Sem título",
-    object_description: record.objeto || "",
-    agency: record.uasg_nome || record.nome_orgao || "Não informado",
-    government_level: "Federal",
-    modality: record.modalidade_licitacao || record.tipo || null,
-    estimated_value: record.valor_estimado ? parseFloat(record.valor_estimado) : null,
-    is_srp: record.srp === "Sim" || record.srp === true || null,
-    state: record.uf || null,
-    city: record.municipio || null,
-    publication_date: record.data_publicacao || null,
-    opening_date: record.data_abertura_proposta || record.data_abertura || null,
-    closing_date: record.data_entrega_proposta || null,
-    status: record.situacao || record.situacao_aviso || null,
-    source_portal: "Compras.gov.br",
-    external_url: record.link_licitacao || record.uri_licitacao || null,
-  };
-}
-
-async function fetchComprasGov(filters: SearchFilters): Promise<{ data: NormalizedProcess[]; total: number; error?: string }> {
-  try {
-    const params = new URLSearchParams();
-    const offset = ((filters.page || 1) - 1) * (filters.pageSize || 20);
-    params.set('offset', String(offset));
-    params.set('limit', String(filters.pageSize || 20));
-    if (filters.uf && filters.uf !== 'all') params.set('uf', filters.uf);
-
-    const url = `${COMPRAS_GOV_BASE}/licitacoes.json?${params.toString()}`;
-    const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), 8000);
-
-    try {
-      const resp = await fetch(url, { signal: controller.signal });
-      clearTimeout(timeout);
-      if (!resp.ok) return { data: [], total: 0, error: `Compras.gov retornou status ${resp.status}` };
-
-      const json = await resp.json();
-      const resources = json._embedded?.recursos || json.recursos || json._embedded?.licitacoes || [];
-      const records = resources.map(normalizeComprasGovRecord);
-      return { data: records, total: json.count || json.total || records.length };
-    } catch (e) {
-      clearTimeout(timeout);
-      return { data: [], total: 0, error: `Compras.gov indisponível no momento` };
-    }
-  } catch (error) {
-    return { data: [], total: 0, error: `Compras.gov indisponível no momento` };
-  }
-}
-
 function applyLocalTextFilters(records: NormalizedProcess[], filters: SearchFilters): NormalizedProcess[] {
   let result = records;
 
@@ -276,6 +225,7 @@ function applyLocalTextFilters(records: NormalizedProcess[], filters: SearchFilt
     });
   }
 
+  // Mantemos o filtro local de UF como uma camada extra de segurança
   if (filters.uf && filters.uf !== 'all') {
     result = result.filter(r => r.state === filters.uf);
   }
@@ -323,38 +273,26 @@ function dedupeNormalizedProcesses(processes: NormalizedProcess[]): NormalizedPr
 async function searchPublicProcesses(filters: SearchFilters): Promise<SearchResult> {
   const sources: SearchResult["sources"] = [];
   let allProcesses: NormalizedProcess[] = [];
+  let rawTotalRecords = 0; // Armazena o total real de registros que a API retornou
 
   const pncpResult = await aggregatePncpResults(filters);
 
   if (pncpResult.error) {
     sources.push({ name: "PNCP", status: "error", message: pncpResult.error });
   } else if (pncpResult.data.length === 0) {
-    sources.push({ name: "PNCP", status: "empty", message: "Nenhum resultado no PNCP para o período" });
+    sources.push({ name: "PNCP", status: "empty", message: "Nenhum resultado no PNCP para os filtros aplicados" });
   } else {
     sources.push({ name: "PNCP", status: "ok" });
     allProcesses.push(...pncpResult.data);
+    rawTotalRecords += pncpResult.total;
   }
 
-  if (COMPRAS_GOV_ENABLED) {
-    const cgResult = await fetchComprasGov(filters);
-    if (cgResult.error) {
-      sources.push({ name: "Compras.gov", status: "error", message: cgResult.error });
-    } else if (cgResult.data.length === 0) {
-      sources.push({ name: "Compras.gov", status: "empty" });
-    } else {
-      sources.push({ name: "Compras.gov", status: "ok" });
-      allProcesses.push(...cgResult.data);
-    }
-  } else {
-    sources.push({ name: "Compras.gov", status: "disabled", message: "Fonte desabilitada temporariamente" });
-  }
+  sources.push({ name: "Compras.gov", status: "disabled", message: "Fonte desabilitada temporariamente" });
 
   allProcesses = dedupeNormalizedProcesses(allProcesses);
   allProcesses = applyLocalTextFilters(allProcesses, filters);
 
-  if (filters.status && filters.status !== 'all') {
-    // Já filtrado
-  } else {
+  if (!filters.status || filters.status === 'all') {
     const today = new Date().toISOString().substring(0, 10);
     allProcesses = allProcesses.filter(p => {
       if (p.status) {
@@ -378,10 +316,9 @@ async function searchPublicProcesses(filters: SearchFilters): Promise<SearchResu
   const pageSize = filters.pageSize || 50;
   const page = filters.page || 1;
 
-  // PAGINAÇÃO CORRIGIDA AQUI: Retorna todos os dados que sobreviveram aos filtros locais
   return {
     data: allProcesses,
-    totalRecords: allProcesses.length,
+    totalRecords: rawTotalRecords > 0 ? rawTotalRecords : allProcesses.length, // Devolve o número total verdadeiro
     page,
     pageSize,
     sources,
