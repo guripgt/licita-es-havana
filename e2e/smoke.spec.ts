@@ -2,7 +2,7 @@ import { test, expect } from "@playwright/test";
 
 // Usa a API real do PNCP: confirma que a busca traz resultados e o funil persiste.
 test("busca real no PNCP, salva no funil e persiste após recarregar", async ({ page }) => {
-  await page.goto("/#/buscar");
+  await page.goto("./#/buscar");
   await page.getByRole("combobox").nth(0).click();
   await page.getByRole("option", { name: "Pregão - Eletrônico" }).click();
   await page.getByRole("combobox").nth(1).click();
@@ -17,13 +17,13 @@ test("busca real no PNCP, salva no funil e persiste após recarregar", async ({ 
   await firstRow.getByRole("button", { name: "Salvar no funil" }).click();
   await expect(page.getByText("Processo salvo no funil!")).toBeVisible();
 
-  await page.goto("/#/funil");
+  await page.goto("./#/funil");
   await expect(page.getByText(title.slice(0, 40)).first()).toBeVisible();
   await page.reload();
   await expect(page.getByText(title.slice(0, 40)).first()).toBeVisible();
 });
 
 test("processo inexistente mostra aviso", async ({ page }) => {
-  await page.goto("/#/licitacao/PNCP/nao-existe");
+  await page.goto("./#/licitacao/PNCP/nao-existe");
   await expect(page.getByText("Processo não encontrado.")).toBeVisible();
 });
