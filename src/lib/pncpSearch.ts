@@ -5,11 +5,15 @@
  */
 
 import type { NormalizedProcess, SearchFilters } from '@/types/processes';
-import { applyLocalFilters, PNCP_ESFERA_MAP, type SearchBatch, type SearchSession } from './pncp';
+import { applyLocalFilters, PNCP_ESFERA_MAP, tokenize, type SearchBatch, type SearchSession } from './pncp';
 
 const SEARCH_BASE = 'https://pncp.gov.br/api/search/';
 const SEARCH_PAGE_SIZE = 100;
 const SEARCH_TIMEOUT_MS = 20000;
+/** O portal só deixa paginar até pagina × tam_pagina = 10.000. */
+const RESULT_WINDOW = 10000;
+/** O servidor de busca às vezes derruba a conexão: novas tentativas rápidas. */
+const RETRY_DELAYS_MS = [300, 1000];
 /** Com filtros só do navegador, lê páginas até achar isto de resultados novos... */
 const TARGET_MATCHES = 50;
 /** ...ou até este limite de páginas por clique (2.000 editais, ~5s). */
@@ -21,12 +25,9 @@ const STATUS_BY_SITUATION: Record<string, string> = {
   encerradas: 'encerradas',
 };
 
-function terms(str: string | undefined): string[] {
-  return (str || '').split(/\s+/).filter(Boolean);
-}
-
 export function buildSearchUrl(filters: SearchFilters, page: number): string {
-  const q = [...terms(filters.searchText), ...terms(filters.excludeText).map(t => `-${t}`)].join(' ');
+  // Termos excluídos não vão ao portal: lá "-termo" vira mais um termo obrigatório.
+  const q = tokenize(filters.searchText).join(' ');
   const params = new URLSearchParams();
   params.set('q', q);
   params.set('tipos_documento', 'edital');
@@ -51,7 +52,7 @@ export function normalizeSearchItem(item: any): NormalizedProcess {
     external_id: controle,
     source: 'PNCP',
     title: description,
-    object_description: description,
+    object_description: emptyToNull(item.informacao_complementar) || description,
     agency: item.orgao_nome || 'Não informado',
     government_level: PNCP_ESFERA_MAP[item.esfera_id] || item.esfera_nome || null,
     modality: item.modalidade_licitacao_nome || null,
@@ -70,13 +71,23 @@ export function normalizeSearchItem(item: any): NormalizedProcess {
   };
 }
 
+class TimeoutError extends Error {}
+
+const sleep = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
+
 async function fetchOnce(url: string, signal?: AbortSignal) {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), SEARCH_TIMEOUT_MS);
   const onCancel = () => controller.abort();
   signal?.addEventListener('abort', onCancel, { once: true });
   try {
-    const resp = await fetch(url, { signal: controller.signal, headers: { Accept: 'application/json' } });
+    let resp: Response;
+    try {
+      resp = await fetch(url, { signal: controller.signal, headers: { Accept: 'application/json' } });
+    } catch (e) {
+      if (!signal?.aborted && e instanceof DOMException && e.name === 'AbortError') throw new TimeoutError('Tempo esgotado na busca do PNCP');
+      throw e;
+    }
     if (!resp.ok) throw new Error(`Busca do PNCP indisponível (HTTP ${resp.status})`);
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     let json: any;
@@ -84,37 +95,41 @@ async function fetchOnce(url: string, signal?: AbortSignal) {
     if (!Array.isArray(json?.items) || typeof json?.total !== 'number') {
       throw new Error('Resposta inesperada da busca do PNCP');
     }
-    return { data: json.items.map(normalizeSearchItem) as NormalizedProcess[], total: json.total as number };
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const items = json.items.filter((it: any) => it?.numero_controle_pncp);
+    return { data: items.map(normalizeSearchItem) as NormalizedProcess[], total: json.total as number };
   } finally {
     clearTimeout(timer);
     signal?.removeEventListener('abort', onCancel);
   }
 }
 
-/** Uma página da busca; repete uma vez em falha de rede (o servidor às vezes derruba a conexão). */
+/** Uma página da busca; repete em falha de conexão ou tempo esgotado (o servidor às vezes derruba a conexão). */
 export async function fetchSearchPage(url: string, signal?: AbortSignal): Promise<{ data: NormalizedProcess[]; total: number }> {
-  try {
-    return await fetchOnce(url, signal);
-  } catch (e) {
-    if (signal?.aborted || !(e instanceof TypeError)) throw e;
-    return await fetchOnce(url, signal);
+  for (let attempt = 0; ; attempt++) {
+    try {
+      return await fetchOnce(url, signal);
+    } catch (e) {
+      const retryable = e instanceof TypeError || e instanceof TimeoutError;
+      if (signal?.aborted || !retryable || attempt >= RETRY_DELAYS_MS.length) throw e;
+      await sleep(RETRY_DELAYS_MS[attempt]);
+    }
   }
 }
 
 /** Filtros que a busca do portal não oferece e precisam ser aplicados no navegador. */
 function hasLocalFilters(f: SearchFilters): boolean {
-  return Boolean(f.city || f.agency || (f.srp && f.srp !== 'all') || f.minValue != null || f.maxValue != null
+  return Boolean(f.excludeText?.trim() || f.city || f.agency || (f.srp && f.srp !== 'all') || f.minValue != null || f.maxValue != null
     || f.openDateStart || f.openDateEnd || f.closeDateStart || f.closeDateEnd || f.pubDateStart || f.pubDateEnd
     || ['revogadas', 'anuladas', 'suspensas'].includes(f.situation || ''));
 }
 
 export function createPortalSearch(filters: SearchFilters, today: Date = new Date()): SearchSession {
-  // Texto e situação aberta/julgamento/encerrada já vêm filtrados do servidor.
+  // Palavra-chave e situação aberta/julgamento/encerrada já vêm filtradas do servidor.
   const situation = filters.situation || 'abertas';
   const localFilters: SearchFilters = {
     ...filters,
     searchText: undefined,
-    excludeText: undefined,
     situation: ['revogadas', 'anuladas', 'suspensas'].includes(situation) ? situation : 'todas',
   };
   const local = hasLocalFilters(filters);
@@ -126,7 +141,9 @@ export function createPortalSearch(filters: SearchFilters, today: Date = new Dat
   let exhausted = false;
   let inFlight: Promise<SearchBatch> | null = null;
 
-  const hasMore = () => !exhausted && (total === null || (nextPage - 1) * SEARCH_PAGE_SIZE < total);
+  const reachable = () => Math.min(total ?? Infinity, RESULT_WINDOW);
+  const hasMore = () => !exhausted && (nextPage - 1) * SEARCH_PAGE_SIZE < reachable();
+  const capped = () => total !== null && total > RESULT_WINDOW && !hasMore();
 
   async function readBatch(onProgress?: (partial: SearchBatch) => void): Promise<SearchBatch> {
     const data: NormalizedProcess[] = [];
@@ -138,7 +155,9 @@ export function createPortalSearch(filters: SearchFilters, today: Date = new Dat
       total: total ?? 0,
       sources: [error
         ? { name: 'PNCP', status: 'error', message: error }
-        : { name: 'PNCP', status: scanned === 0 ? 'empty' : 'ok', message: scanned === 0 ? 'Nenhum edital encontrado' : undefined }],
+        : capped()
+          ? { name: 'PNCP', status: 'ok', message: 'O PNCP só permite percorrer os 10.000 primeiros resultados. Refine a busca (UF, modalidade ou palavra-chave) para ver o restante.' }
+          : { name: 'PNCP', status: scanned === 0 ? 'empty' : 'ok', message: scanned === 0 ? 'Nenhum edital encontrado' : undefined }],
       hasMore: hasMore(),
       mode: 'busca',
       exact: !local,

@@ -176,6 +176,11 @@ describe('applyLocalFilters', () => {
     expect(applyLocalFilters(list, { searchText: 'pregao eletronico' }, now).map(p => p.id)).toEqual(['a']);
   });
 
+  it('aceita frase entre aspas (modo alternativo)', () => {
+    const list = [proc({ id: 'a', title: 'Material de limpeza e higiene' }), proc({ id: 'b', title: 'Limpeza de material' })];
+    expect(applyLocalFilters(list, { searchText: '"material de limpeza"' }, now).map(p => p.id)).toEqual(['a']);
+  });
+
   it('exclui termos', () => {
     const list = [proc({ id: 'a', title: 'Obra de reforma' }), proc({ id: 'b', title: 'Cadeiras' })];
     expect(applyLocalFilters(list, { excludeText: 'obra' }, now).map(p => p.id)).toEqual(['b']);
@@ -211,6 +216,11 @@ describe('validateFilters', () => {
   it('rejeita início posterior ao fim', () => {
     expect(validateFilters({ situation: 'todas', pubDateStart: '2026-10-01', pubDateEnd: '2026-09-01' }))
       .toBe('A data inicial de publicação é posterior à final.');
+  });
+
+  it('rejeita período de publicação acima de 365 dias (API oficial)', () => {
+    expect(validateFilters({ situation: 'todas', pubDateStart: '2025-01-01', pubDateEnd: '2026-10-19' }))
+      .toBe('O período de publicação não pode passar de 365 dias.');
   });
 
   it('ignora período de publicação para abertas', () => {

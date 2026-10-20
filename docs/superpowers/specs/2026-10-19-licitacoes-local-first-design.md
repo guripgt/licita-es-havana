@@ -124,13 +124,18 @@ A busca por palavra pela API de consultas era lenta (baixava todos os editais da
 e filtrava no navegador). Agora a busca principal usa a mesma API do portal (`/api/search/`,
 `Accept: application/json`), que filtra no servidor e responde em < 1 s:
 
-- `q` = palavras de "Buscar no objeto" + `-termo` para cada termo excluído (aspas = frase exata).
+- `q` = palavras de "Buscar no objeto" (aspas = frase exata). "Excluir termos" é aplicado no navegador:
+  no portal, `-termo` não exclui (vira termo obrigatório).
 - `status`: abertas → `recebendo_proposta`; **em julgamento** (nova opção) → `propostas_encerradas`;
-  encerradas → `encerradas`; revogadas/anuladas/suspensas/todas → `todos` (+ filtro local por `situacao_id`).
+  encerradas → `encerradas`; todas → `todos`.
 - `ufs`, `modalidades`, `tipos_documento=edital`, `ordenacao=-data`, `tam_pagina=100`.
 - Filtros sem equivalente no servidor (cidade, órgão, SRP, valor, datas) são aplicados no navegador;
   com eles ativos, o app lê páginas automaticamente até achar 50 resultados (máx. 20 páginas por clique).
-- O período de publicação deixou de ter limite de 365 dias (é filtro local).
+- Período de publicação sem palavra-chave (em situações ≠ abertas) e revogadas/anuladas/suspensas vão direto para a API
+  oficial de consultas, que filtra no servidor (limite de 365 dias mantido). A busca do portal ordena por
+  atualização e só pagina até 10.000 resultados; ao atingir o limite, o selo avisa para refinar.
+- Frases entre aspas funcionam na busca e na exclusão (local); a busca repete até 2 vezes (300 ms, 1 s) quando
+  o servidor derruba a conexão ou demora mais de 20 s.
 - **Plano B:** se a primeira página da busca do portal falhar, `src/lib/search.ts` usa a API de
   consultas (motor anterior) e o selo mostra "PNCP (modo alternativo)".
 - Selo de situação na tabela: Recebendo propostas / Prazo encerrado / Revogada / Anulada / Suspensa,

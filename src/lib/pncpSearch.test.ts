@@ -29,12 +29,17 @@ describe('buildSearchUrl', () => {
     expect(p.has('modalidades')).toBe(false);
   });
 
-  it('converte termos excluídos em -termo e aplica modalidade', () => {
+  it('não manda termos excluídos ao portal (lá o "-" não exclui) e aplica modalidade', () => {
     const { p } = params(buildSearchUrl({ searchText: 'material limpeza', excludeText: 'obra reforma', modality: 6 }, 2));
-    expect(p.get('q')).toBe('material limpeza -obra -reforma');
+    expect(p.get('q')).toBe('material limpeza');
     expect(p.get('modalidades')).toBe('6');
     expect(p.get('pagina')).toBe('2');
     expect(p.has('ufs')).toBe(false);
+  });
+
+  it('mantém frases entre aspas', () => {
+    const { p } = params(buildSearchUrl({ searchText: '  "material de limpeza"   escolar ' }, 1));
+    expect(p.get('q')).toBe('"material de limpeza" escolar');
   });
 
   it('mapeia cada situação para o status do portal', () => {
@@ -89,6 +94,12 @@ describe('normalizeSearchItem', () => {
     expect(r.external_url).toBe('https://pncp.gov.br/app/editais/01815216000178/2026/183');
   });
 
+  it('usa a informação complementar como descrição do objeto', () => {
+    const r = normalizeSearchItem({ ...item, informacao_complementar: 'Itens: panetone 500g' });
+    expect(r.title).toBe('FORNECIMENTO DE CESTAS NATALINAS COM PANETONE');
+    expect(r.object_description).toBe('Itens: panetone 500g');
+  });
+
   it('trata datas vazias como ausentes', () => {
     const r = normalizeSearchItem({ ...item, data_inicio_vigencia: '', data_fim_vigencia: null });
     expect(r.opening_date).toBeNull();
@@ -104,6 +115,20 @@ describe('fetchSearchPage', () => {
     expect(page.total).toBe(2);
     expect(page.data).toHaveLength(1);
     expect(f.mock.calls[0][1].headers.Accept).toBe('application/json');
+  });
+
+  it('tenta de novo quando o servidor derruba a conexão', async () => {
+    vi.useFakeTimers();
+    const f = vi.fn()
+      .mockRejectedValueOnce(new TypeError('Failed to fetch'))
+      .mockRejectedValueOnce(new TypeError('Failed to fetch'))
+      .mockResolvedValueOnce(jsonResponse(200, { items: [], total: 0 }));
+    vi.stubGlobal('fetch', f);
+    const result = fetchSearchPage('https://x');
+    await vi.advanceTimersByTimeAsync(300 + 1000);
+    await expect(result).resolves.toMatchObject({ total: 0 });
+    expect(f).toHaveBeenCalledTimes(3);
+    vi.useRealTimers();
   });
 
   it('rejeita resposta em formato inesperado', async () => {
@@ -140,6 +165,20 @@ describe('createPortalSearch', () => {
     expect(last.hasMore).toBe(false);
   });
 
+  it('aplica a exclusão de termos e frases no navegador', async () => {
+    stubSearch(() => jsonResponse(200, {
+      items: [
+        portalItem('a', { description: 'Material de limpeza' }),
+        portalItem('b', { description: 'Material de limpeza e produtos químicos' }),
+        portalItem('c', { description: 'Material de limpeza para obra' }),
+      ],
+      total: 3,
+    }));
+    const batch = await createPortalSearch({ searchText: 'limpeza', excludeText: '"produtos químicos" obra' }, today).next();
+    expect(batch.data.map(p => p.external_id)).toEqual(['a']);
+    expect(batch.exact).toBe(false);
+  });
+
   it('não refiltra localmente o texto já buscado no servidor', async () => {
     stubSearch(() => jsonResponse(200, { items: [portalItem('a', { description: 'Cestas natalinas' })], total: 1 }));
     const batch = await createPortalSearch({ searchText: 'panetone' }, today).next();
@@ -166,12 +205,52 @@ describe('createPortalSearch', () => {
   });
 });
 
+describe('limite de 10.000 resultados do portal', () => {
+  it('não pede páginas além do limite e avisa para refinar', async () => {
+    const f = stubSearch(page => jsonResponse(200, { items: [portalItem(`p${page}`, { municipio_nome: 'Anápolis' })], total: 38236 }));
+    const search = createPortalSearch({ city: 'goiania' }, today);
+    let batch;
+    for (let i = 0; i < 6; i++) batch = await search.next();
+    expect(f).toHaveBeenCalledTimes(100);
+    expect(batch!.hasMore).toBe(false);
+    expect(batch!.sources[0].message).toMatch(/10\.000 primeiros resultados/);
+  });
+});
+
+describe('itens sem número de controle', () => {
+  it('são ignorados', async () => {
+    stubSearch(() => jsonResponse(200, { items: [portalItem('a'), { description: 'sem controle' }], total: 2 }));
+    const batch = await createPortalSearch({}, today).next();
+    expect(batch.data.map(p => p.external_id)).toEqual(['a']);
+  });
+});
+
 describe('createSearch (com plano B)', () => {
   it('usa a busca do portal quando ela responde', async () => {
     const f = stubSearch(() => jsonResponse(200, { items: [portalItem('a')], total: 1 }));
     const batch = await createSearch({ searchText: 'panetone', uf: 'GO' }, today).next();
     expect(batch.mode).toBe('busca');
     expect(new URL(f.mock.calls[0][0]).pathname).toBe('/api/search/');
+  });
+
+  it('usa a API oficial para período de publicação e para revogadas', async () => {
+    const f = stubSearch(() => jsonResponse(200, { data: [], totalRegistros: 0, totalPaginas: 0 }));
+    await createSearch({ situation: 'encerradas', pubDateStart: '2025-01-01', pubDateEnd: '2025-03-31', modality: 6 }, today).next();
+    await createSearch({ situation: 'revogadas', modality: 6 }, today).next();
+    for (const call of f.mock.calls) expect(new URL(call[0]).pathname).toMatch(/^\/api\/consulta\//);
+  });
+
+  it('com palavra-chave, período de publicação continua na busca do portal', async () => {
+    const f = stubSearch(() => jsonResponse(200, { items: [], total: 0 }));
+    await createSearch({ searchText: 'panetone', situation: 'encerradas', pubDateStart: '2025-10-01', pubDateEnd: '2025-12-31' }, today).next();
+    expect(new URL(f.mock.calls[0][0]).pathname).toBe('/api/search/');
+  });
+
+  it('chamadas simultâneas na primeira página não criam duas buscas', async () => {
+    const f = stubSearch(() => jsonResponse(200, { items: [portalItem('a')], total: 1 }));
+    const search = createSearch({ searchText: 'x' }, today);
+    await Promise.all([search.next(), search.next()]);
+    expect(f).toHaveBeenCalledTimes(1);
   });
 
   it('cai para a API de consulta quando a busca do portal falha', async () => {

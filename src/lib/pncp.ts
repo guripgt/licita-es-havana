@@ -175,14 +175,21 @@ export async function fetchPncpPage(url: string, signal?: AbortSignal): Promise<
 const PAGES_PER_BATCH = 5;
 const MODALITY_CONCURRENCY = 2;
 
+const MAX_PUBLICATION_DAYS = 365;
+
 const SITUATION_STATUS_ID: Partial<Record<string, number>> = { revogadas: 2, anuladas: 3, suspensas: 4 };
 
 export function normalizeText(str: string): string {
   return str.normalize('NFD').replace(/[̀-ͯ]/g, '').toLowerCase().trim();
 }
 
+/** Separa palavras, mantendo "frases entre aspas" como um item só (com as aspas). */
+export function tokenize(str: string | undefined): string[] {
+  return (str || '').match(/"[^"]+"|\S+/g) ?? [];
+}
+
 function terms(str: string): string[] {
-  return normalizeText(str).split(/\s+/).filter(Boolean);
+  return tokenize(str).map(t => normalizeText(t.replace(/"/g, ''))).filter(Boolean);
 }
 
 function inDateRange(value: string | null, start?: string, end?: string): boolean {
@@ -195,8 +202,11 @@ function inDateRange(value: string | null, start?: string, end?: string): boolea
 /** Valida os filtros antes de consultar a API; retorna a mensagem de erro ou null. */
 export function validateFilters(filters: SearchFilters): string | null {
   if (!filters.situation || filters.situation === 'abertas') return null;
-  if (filters.pubDateStart && filters.pubDateEnd && filters.pubDateStart > filters.pubDateEnd) {
-    return 'A data inicial de publicação é posterior à final.';
+  if (filters.pubDateStart && filters.pubDateEnd) {
+    if (filters.pubDateStart > filters.pubDateEnd) return 'A data inicial de publicação é posterior à final.';
+    // Esses filtros usam a API oficial de consultas, que limita o período a 365 dias.
+    const days = (Date.parse(filters.pubDateEnd) - Date.parse(filters.pubDateStart)) / DAY_MS;
+    if (days > MAX_PUBLICATION_DAYS) return 'O período de publicação não pode passar de 365 dias.';
   }
   return null;
 }

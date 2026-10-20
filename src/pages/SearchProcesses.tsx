@@ -323,7 +323,7 @@ const SearchProcesses = () => {
                 <Input id="pubDateEnd" type="date" value={pubDateEnd} onChange={e => setPubDateEnd(e.target.value)} />
               </div>
               <p className="self-end pb-2 text-xs text-muted-foreground sm:col-span-2">
-                Opcional: limita pela data de publicação no PNCP.
+                Opcional. Sem palavra-chave (ou para revogadas, anuladas e suspensas) a busca por período usa a API oficial do PNCP: até 365 dias; sem datas, últimos 90 dias.
               </p>
             </div>
           )}
