@@ -21,26 +21,33 @@ const ProcessDetail = () => {
   useEffect(() => {
     const load = async () => {
       setLoading(true);
-      const decodedExternalId = externalId ? decodeURIComponent(externalId) : '';
+      // react-router já entrega o parâmetro decodificado
+      const decodedExternalId = externalId || '';
       let proc: NormalizedProcess | null = null;
       let saved: SavedProcess | null = null;
+      let docs: CompanyDocument[] = [];
 
-      if (source && decodedExternalId) {
-        saved = (await getProcess(processKey({ source, external_id: decodedExternalId }))) ?? null;
-        if (saved) {
-          proc = saved;
-        } else {
-          const cached = sessionStorage.getItem(`process_${source}_${decodedExternalId}`);
-          if (cached) {
-            try { proc = JSON.parse(cached); } catch { proc = null; }
-          }
+      try {
+        if (source && decodedExternalId) {
+          saved = (await getProcess(processKey({ source, external_id: decodedExternalId }))) ?? null;
+        }
+        docs = await listDocuments();
+      } catch (err) {
+        console.error('Erro ao ler dados locais:', err);
+      }
+      if (saved) {
+        proc = saved;
+      } else if (source && decodedExternalId) {
+        const cached = sessionStorage.getItem(`process_${source}_${decodedExternalId}`);
+        if (cached) {
+          try { proc = JSON.parse(cached); } catch { proc = null; }
         }
       }
 
       setProcess(proc);
       setSavedProcess(saved);
       setNotes(saved?.notes || '');
-      setCompanyDocs(await listDocuments());
+      setCompanyDocs(docs);
       setLoading(false);
     };
     load();

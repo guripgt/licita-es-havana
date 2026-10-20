@@ -26,7 +26,7 @@ export interface NormalizedProcess {
   status_id: number | null;
 }
 
-export type Situation = 'abertas' | 'encerradas' | 'revogadas' | 'anuladas' | 'suspensas' | 'todas';
+export type Situation = 'abertas' | 'julgamento' | 'encerradas' | 'revogadas' | 'anuladas' | 'suspensas' | 'todas';
 
 export interface SearchFilters {
   searchText?: string;

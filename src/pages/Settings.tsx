@@ -16,7 +16,7 @@ const SettingsPage = () => {
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
-    getSettings().then(s => { setSettings(s); setLoading(false); });
+    getSettings().then(setSettings).catch(err => toast.error('Erro ao ler configurações: ' + err.message)).finally(() => setLoading(false));
   }, []);
 
   const set = (field: keyof Settings) => (e: React.ChangeEvent<HTMLInputElement>) =>
@@ -24,10 +24,15 @@ const SettingsPage = () => {
 
   const save = async (message: string) => {
     setSaving(true);
-    await saveSettings(settings);
-    window.dispatchEvent(new Event(SETTINGS_UPDATED_EVENT));
-    toast.success(message);
-    setSaving(false);
+    try {
+      await saveSettings(settings);
+      window.dispatchEvent(new Event(SETTINGS_UPDATED_EVENT));
+      toast.success(message);
+    } catch (err: any) {
+      toast.error('Erro ao salvar: ' + (err.message || err));
+    } finally {
+      setSaving(false);
+    }
   };
 
   const handleExport = async () => {

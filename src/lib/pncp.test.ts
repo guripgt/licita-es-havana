@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, afterEach } from 'vitest';
-import { buildPncpUrl, normalizePncpRecord, fetchPncpPage, PNCP_MODALITIES, applyLocalFilters, validateFilters, createSearch } from './pncp';
+import { buildPncpUrl, normalizePncpRecord, fetchPncpPage, PNCP_MODALITIES, applyLocalFilters, validateFilters, createConsultaSearch as createSearch } from './pncp';
 import type { NormalizedProcess } from '@/types/processes';
 
 const today = new Date('2026-10-19T12:00:00');
@@ -208,11 +208,6 @@ describe('applyLocalFilters', () => {
 });
 
 describe('validateFilters', () => {
-  it('rejeita período de publicação acima de 365 dias', () => {
-    expect(validateFilters({ situation: 'todas', pubDateStart: '2025-01-01', pubDateEnd: '2026-10-19' }))
-      .toBe('O período de publicação não pode passar de 365 dias.');
-  });
-
   it('rejeita início posterior ao fim', () => {
     expect(validateFilters({ situation: 'todas', pubDateStart: '2026-10-01', pubDateEnd: '2026-09-01' }))
       .toBe('A data inicial de publicação é posterior à final.');

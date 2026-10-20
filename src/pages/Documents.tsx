@@ -57,8 +57,12 @@ const Documents = () => {
     const win = window.open('', '_blank');
     const url = await getDocumentFileUrl(docId);
     if (!win) return;
-    if (url) win.location.href = url;
-    else win.close();
+    if (url) {
+      win.location.href = url;
+      setTimeout(() => URL.revokeObjectURL(url), 60_000); // libera a memória depois que a aba carregou
+    } else {
+      win.close();
+    }
   };
 
   const deleteDoc = async (docId: string) => {

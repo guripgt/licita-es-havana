@@ -117,3 +117,21 @@ listam só `in_funnel=true`.
 ## Fora do escopo
 
 Login, sincronização entre dispositivos, Compras.gov, alertas/notificações.
+
+## Atualização 2026-10-20 — busca do portal
+
+A busca por palavra pela API de consultas era lenta (baixava todos os editais da UF em páginas de 50
+e filtrava no navegador). Agora a busca principal usa a mesma API do portal (`/api/search/`,
+`Accept: application/json`), que filtra no servidor e responde em < 1 s:
+
+- `q` = palavras de "Buscar no objeto" + `-termo` para cada termo excluído (aspas = frase exata).
+- `status`: abertas → `recebendo_proposta`; **em julgamento** (nova opção) → `propostas_encerradas`;
+  encerradas → `encerradas`; revogadas/anuladas/suspensas/todas → `todos` (+ filtro local por `situacao_id`).
+- `ufs`, `modalidades`, `tipos_documento=edital`, `ordenacao=-data`, `tam_pagina=100`.
+- Filtros sem equivalente no servidor (cidade, órgão, SRP, valor, datas) são aplicados no navegador;
+  com eles ativos, o app lê páginas automaticamente até achar 50 resultados (máx. 20 páginas por clique).
+- O período de publicação deixou de ter limite de 365 dias (é filtro local).
+- **Plano B:** se a primeira página da busca do portal falhar, `src/lib/search.ts` usa a API de
+  consultas (motor anterior) e o selo mostra "PNCP (modo alternativo)".
+- Selo de situação na tabela: Recebendo propostas / Prazo encerrado / Revogada / Anulada / Suspensa,
+  calculado no horário local.

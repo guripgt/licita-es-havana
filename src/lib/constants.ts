@@ -48,6 +48,7 @@ export const UF_LIST = [
 
 export const SITUATION_OPTIONS: { value: Situation; label: string }[] = [
   { value: 'abertas', label: 'Abertas (recebendo propostas)' },
+  { value: 'julgamento', label: 'Em julgamento (propostas encerradas)' },
   { value: 'encerradas', label: 'Encerradas' },
   { value: 'revogadas', label: 'Revogadas' },
   { value: 'anuladas', label: 'Anuladas' },

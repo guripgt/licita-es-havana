@@ -28,7 +28,7 @@ export const PNCP_MODALITIES: { code: number; label: string }[] = [
   { code: 13, label: 'Leilão - Presencial' },
 ];
 
-const PNCP_ESFERA_MAP: Record<string, string> = {
+export const PNCP_ESFERA_MAP: Record<string, string> = {
   F: 'Federal', E: 'Estadual', M: 'Municipal', D: 'Distrital',
 };
 
@@ -105,7 +105,7 @@ export function normalizePncpRecord(record: any): NormalizedProcess {
 }
 
 class RateLimitError extends Error {}
-class CancelledError extends Error {}
+export class CancelledError extends Error {}
 
 const OFFLINE_MESSAGE = 'Sem conexão com a internet.';
 
@@ -174,11 +174,10 @@ export async function fetchPncpPage(url: string, signal?: AbortSignal): Promise<
 
 const PAGES_PER_BATCH = 5;
 const MODALITY_CONCURRENCY = 2;
-const MAX_PUBLICATION_DAYS = 365;
 
 const SITUATION_STATUS_ID: Partial<Record<string, number>> = { revogadas: 2, anuladas: 3, suspensas: 4 };
 
-function normalizeText(str: string): string {
+export function normalizeText(str: string): string {
   return str.normalize('NFD').replace(/[̀-ͯ]/g, '').toLowerCase().trim();
 }
 
@@ -196,10 +195,8 @@ function inDateRange(value: string | null, start?: string, end?: string): boolea
 /** Valida os filtros antes de consultar a API; retorna a mensagem de erro ou null. */
 export function validateFilters(filters: SearchFilters): string | null {
   if (!filters.situation || filters.situation === 'abertas') return null;
-  if (filters.pubDateStart && filters.pubDateEnd) {
-    if (filters.pubDateStart > filters.pubDateEnd) return 'A data inicial de publicação é posterior à final.';
-    const days = (Date.parse(filters.pubDateEnd) - Date.parse(filters.pubDateStart)) / DAY_MS;
-    if (days > MAX_PUBLICATION_DAYS) return 'O período de publicação não pode passar de 365 dias.';
+  if (filters.pubDateStart && filters.pubDateEnd && filters.pubDateStart > filters.pubDateEnd) {
+    return 'A data inicial de publicação é posterior à final.';
   }
   return null;
 }
@@ -224,9 +221,10 @@ export function applyLocalFilters(list: NormalizedProcess[], filters: SearchFilt
     if (filters.maxValue != null && (r.estimated_value == null || r.estimated_value > filters.maxValue)) return false;
     if (!inDateRange(r.opening_date, filters.openDateStart, filters.openDateEnd)) return false;
     if (!inDateRange(r.closing_date, filters.closeDateStart, filters.closeDateEnd)) return false;
+    if (!inDateRange(r.publication_date, filters.pubDateStart, filters.pubDateEnd)) return false;
     if (situation === 'abertas') {
       if (r.status_id != null && r.status_id !== 1) return false;
-    } else if (situation === 'encerradas') {
+    } else if (situation === 'encerradas' || situation === 'julgamento') {
       if (r.status_id !== 1 || !r.closing_date || new Date(r.closing_date) >= now) return false;
     } else if (SITUATION_STATUS_ID[situation] && r.status_id !== SITUATION_STATUS_ID[situation]) {
       return false;
@@ -241,6 +239,10 @@ export interface SearchBatch {
   total: number;
   sources: SourceStatus[];
   hasMore: boolean;
+  /** 'busca' = busca do portal (filtra no servidor); 'consulta' = API oficial de consultas (filtra no navegador). */
+  mode: 'busca' | 'consulta';
+  /** true quando `total` é exatamente o número de resultados (nenhum filtro aplicado no navegador). */
+  exact: boolean;
 }
 
 interface ModalityCursor {
@@ -261,7 +263,8 @@ export interface SearchSession {
   cancel(): void;
 }
 
-export function createSearch(filters: SearchFilters, today: Date = new Date()): SearchSession {
+/** Busca pela API oficial de consultas: lê editais por modalidade e filtra no navegador. */
+export function createConsultaSearch(filters: SearchFilters, today: Date = new Date()): SearchSession {
   const cursors: ModalityCursor[] = (filters.modality ? [filters.modality] : PNCP_MODALITIES.map(m => m.code))
     .map(code => ({ code, nextPage: 1, totalPages: null, done: false }));
   const seen = new Set<string>();
@@ -298,7 +301,7 @@ export function createSearch(filters: SearchFilters, today: Date = new Date()): 
       if (errors.length) source = { name: 'PNCP', status: 'error', message: `Falha em ${errors.length} consulta(s): ${errors[0]}` };
       else if (scanned === 0) source = { name: 'PNCP', status: 'empty', message: 'Nenhum edital encontrado' };
       else source = { name: 'PNCP', status: 'ok' };
-      return { data: [...data], scanned, total, sources: [source], hasMore: cursors.some(c => !c.done) };
+      return { data: [...data], scanned, total, sources: [source], hasMore: cursors.some(c => !c.done), mode: 'consulta', exact: false };
     };
 
     const onPage = (records: NormalizedProcess[]) => {

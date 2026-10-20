@@ -7,12 +7,15 @@ organiza oportunidades num funil e guarda os documentos da empresa.
 
 ## Como funciona
 
-- A busca consulta a API pública do PNCP direto do navegador — não há servidor nem login.
+- A busca usa a mesma busca do portal do PNCP (pncp.gov.br/app/editais), direto do navegador —
+  palavra-chave, situação, UF e modalidade são filtradas no servidor do PNCP e o resultado chega em
+  menos de 1 segundo. Se ela falhar, o app usa a API oficial de consultas (mais lenta) como plano B.
+  Não há servidor próprio nem login.
 - Processos salvos, notas, funil, documentos e configurações ficam guardados **neste navegador**
   (IndexedDB). Use **Configurações → Exportar backup** com frequência e **Importar backup**
   para levar os dados para outro computador ou navegador.
-- O PNCP limita a quantidade de consultas por minuto; quando isso acontece, o app espera e tenta
-  de novo sozinho. Filtrar por UF e modalidade deixa a busca bem mais rápida.
+- Dicas de busca: use aspas para frase exata (`"material de limpeza"`); o campo "Excluir termos"
+  remove resultados com aquelas palavras.
 
 ## Rodar localmente
 

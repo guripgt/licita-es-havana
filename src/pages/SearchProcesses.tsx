@@ -1,6 +1,8 @@
 import { useEffect, useRef, useState } from 'react';
 import { formatCurrency, formatDate, UF_LIST, SITUATION_OPTIONS } from '@/lib/constants';
-import { createSearch, validateFilters, PNCP_MODALITIES, type SearchBatch, type SearchSession } from '@/lib/pncp';
+import { validateFilters, PNCP_MODALITIES, type SearchBatch, type SearchSession } from '@/lib/pncp';
+import { createSearch } from '@/lib/search';
+import { situationBadge } from '@/lib/situation';
 import { listProcesses, processKey, saveProcess } from '@/lib/store';
 import type { NormalizedProcess, SearchFilters, Situation, SourceStatus } from '@/types/processes';
 import { Button } from '@/components/ui/button';
@@ -21,6 +23,7 @@ const SearchProcesses = () => {
   const [favorites, setFavorites] = useState<Set<string>>(new Set());
   const [sources, setSources] = useState<SourceStatus[]>([]);
   const [scanned, setScanned] = useState(0);
+  const [exactTotal, setExactTotal] = useState(false);
   const [totalRecords, setTotalRecords] = useState(0);
   const [hasMore, setHasMore] = useState(false);
   const [hasSearched, setHasSearched] = useState(false);
@@ -86,6 +89,7 @@ const SearchProcesses = () => {
       setProcesses(prev => [...prev, ...added]);
       setSources(batch.sources);
       setScanned(batch.scanned);
+      setExactTotal(batch.exact);
       setTotalRecords(batch.total);
       setHasMore(batch.hasMore);
       setHasSearched(true);
@@ -179,23 +183,10 @@ const SearchProcesses = () => {
 
   // Status badge helper
   const getStatusBadge = (process: NormalizedProcess) => {
-    const today = new Date().toISOString().substring(0, 10);
-    const statusText = process.status || '';
-    const norm = statusText.toLowerCase();
-
-    if (norm.includes('encerrad') || norm.includes('homologad') || norm.includes('revogad') || norm.includes('anulad')) {
-      return { label: statusText || 'Encerrado', color: 'bg-destructive/10 text-destructive', dot: 'bg-destructive' };
-    }
-    if (norm.includes('proposta') || norm.includes('aberto') || norm.includes('recebendo')) {
-      return { label: statusText || 'Aberto', color: 'bg-emerald-500/10 text-emerald-700', dot: 'bg-emerald-500' };
-    }
-    if (process.closing_date && process.closing_date < today) {
-      return { label: statusText || 'Encerrado', color: 'bg-destructive/10 text-destructive', dot: 'bg-destructive' };
-    }
-    if (process.closing_date && process.closing_date >= today) {
-      return { label: statusText || 'Aberto', color: 'bg-emerald-500/10 text-emerald-700', dot: 'bg-emerald-500' };
-    }
-    return { label: statusText || 'Em andamento', color: 'bg-warning/10 text-warning', dot: 'bg-warning' };
+    const { label, tone } = situationBadge(process);
+    if (tone === 'open') return { label, color: 'bg-emerald-500/10 text-emerald-700', dot: 'bg-emerald-500' };
+    if (tone === 'closed') return { label, color: 'bg-destructive/10 text-destructive', dot: 'bg-destructive' };
+    return { label, color: 'bg-warning/10 text-warning', dot: 'bg-warning' };
   };
 
   const sourceBadgeColor = (source: string) => {
@@ -332,7 +323,7 @@ const SearchProcesses = () => {
                 <Input id="pubDateEnd" type="date" value={pubDateEnd} onChange={e => setPubDateEnd(e.target.value)} />
               </div>
               <p className="self-end pb-2 text-xs text-muted-foreground sm:col-span-2">
-                Sem datas, busca os últimos 90 dias. Período máximo: 365 dias.
+                Opcional: limita pela data de publicação no PNCP.
               </p>
             </div>
           )}
@@ -404,7 +395,7 @@ const SearchProcesses = () => {
             {hasSearched && (
               <p className="text-xs text-muted-foreground mt-1">
                 {hasMore
-                  ? `${scanned.toLocaleString('pt-BR')} de ${totalRecords.toLocaleString('pt-BR')} editais analisados até agora.`
+                  ? `${scanned.toLocaleString('pt-BR')} de ${totalRecords.toLocaleString('pt-BR')} editais verificados até agora.`
                   : 'Tente ampliar o período, mudar a modalidade ou remover filtros.'}
               </p>
             )}
@@ -512,9 +503,18 @@ const SearchProcesses = () => {
             {/* Footer with count + load more */}
             <div className="flex items-center justify-between border-t border-border px-4 py-3">
               <p className="text-xs text-muted-foreground">
-                <span className="font-semibold text-foreground">{processes.length}</span> resultado{processes.length !== 1 ? 's' : ''} em{' '}
-                <span className="font-semibold text-foreground">{scanned.toLocaleString('pt-BR')}</span> de{' '}
-                <span className="font-semibold text-foreground">{totalRecords.toLocaleString('pt-BR')}</span> editais analisados
+                {exactTotal ? (
+                  <>
+                    Mostrando <span className="font-semibold text-foreground">{processes.length}</span> de{' '}
+                    <span className="font-semibold text-foreground">{totalRecords.toLocaleString('pt-BR')}</span> resultado{totalRecords !== 1 ? 's' : ''}
+                  </>
+                ) : (
+                  <>
+                    <span className="font-semibold text-foreground">{processes.length}</span> resultado{processes.length !== 1 ? 's' : ''} em{' '}
+                    <span className="font-semibold text-foreground">{scanned.toLocaleString('pt-BR')}</span> de{' '}
+                    <span className="font-semibold text-foreground">{totalRecords.toLocaleString('pt-BR')}</span> editais verificados
+                  </>
+                )}
               </p>
               {hasMore && (
                 <Button
