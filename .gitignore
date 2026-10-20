@@ -25,3 +25,5 @@ dist-ssr
 
 .superpowers/
 .env
+test-results/
+playwright-report/

@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
 import { formatCurrency, formatDate, UF_LIST, SITUATION_OPTIONS } from '@/lib/constants';
-import { createSearch, validateFilters, PNCP_MODALITIES } from '@/lib/pncp';
+import { createSearch, validateFilters, PNCP_MODALITIES, type SearchBatch } from '@/lib/pncp';
 import { listProcesses, processKey, saveProcess } from '@/lib/store';
 import type { NormalizedProcess, SearchFilters, Situation, SourceStatus } from '@/types/processes';
 import { Button } from '@/components/ui/button';
@@ -79,15 +79,20 @@ const SearchProcesses = () => {
 
   const runBatch = async (session: SearchSession, append: boolean) => {
     if (append) setLoadingMore(true); else setLoading(true);
-    try {
-      const batch = await session.next();
+    const base = append ? processes : [];
+    const show = (batch: SearchBatch) => {
       if (sessionRef.current !== session) return; // uma busca mais nova começou
-      setProcesses(prev => append ? [...prev, ...batch.data] : batch.data);
+      setProcesses([...base, ...batch.data]);
       setSources(batch.sources);
       setScanned(batch.scanned);
       setTotalRecords(batch.total);
       setHasMore(batch.hasMore);
       setHasSearched(true);
+      // a tabela já pode aparecer enquanto o lote continua; o botão mostra que ainda está lendo
+      if (batch.scanned > 0) { setLoading(false); setLoadingMore(true); }
+    };
+    try {
+      show(await session.next(show));
     } catch (err: any) {
       toast.error(err.message || 'Erro ao buscar licitações');
       if (!append) setProcesses([]);
@@ -429,7 +434,7 @@ const SearchProcesses = () => {
                     return (
                       <tr key={p.id} className="border-b border-border/50 hover:bg-muted/30 transition-colors">
                         <td className="px-3 py-2.5">
-                          <button onClick={() => toggleFavorite(p)} className="text-muted-foreground hover:text-warning transition-colors">
+                          <button aria-label="Favoritar" onClick={() => toggleFavorite(p)} className="text-muted-foreground hover:text-warning transition-colors">
                             <Star className={`h-4 w-4 ${favorites.has(processKey(p)) ? 'fill-warning text-warning' : ''}`} />
                           </button>
                         </td>
@@ -474,7 +479,7 @@ const SearchProcesses = () => {
                           <div className="flex items-center gap-1">
                             <Tooltip>
                               <TooltipTrigger asChild>
-                                <Button variant="ghost" size="icon" className="h-7 w-7" onClick={() => viewDetail(p)}>
+                                <Button variant="ghost" size="icon" className="h-7 w-7" aria-label="Ver detalhes" onClick={() => viewDetail(p)}>
                                   <Eye className="h-3.5 w-3.5" />
                                 </Button>
                               </TooltipTrigger>
@@ -482,7 +487,7 @@ const SearchProcesses = () => {
                             </Tooltip>
                             <Tooltip>
                               <TooltipTrigger asChild>
-                                <Button variant="ghost" size="icon" className="h-7 w-7" onClick={() => saveToFunnel(p)}>
+                                <Button variant="ghost" size="icon" className="h-7 w-7" aria-label="Salvar no funil" onClick={() => saveToFunnel(p)}>
                                   <FolderPlus className="h-3.5 w-3.5" />
                                 </Button>
                               </TooltipTrigger>

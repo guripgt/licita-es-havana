@@ -1,12 +1,9 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { BrowserRouter, Route, Routes } from "react-router-dom";
+import { HashRouter, Route, Routes } from "react-router-dom";
 import { Toaster as Sonner } from "@/components/ui/sonner";
 import { Toaster } from "@/components/ui/toaster";
 import { TooltipProvider } from "@/components/ui/tooltip";
-import { AuthProvider } from "@/contexts/AuthContext";
-import { ProtectedRoute } from "@/components/ProtectedRoute";
 import { AppLayout } from "@/components/layout/AppLayout";
-import Login from "./pages/Login";
 import Dashboard from "./pages/Dashboard";
 import SearchProcesses from "./pages/SearchProcesses";
 import ProcessDetail from "./pages/ProcessDetail";
@@ -17,8 +14,8 @@ import NotFound from "./pages/NotFound";
 
 const queryClient = new QueryClient();
 
-const ProtectedPage = ({ children }: { children: React.ReactNode }) => (
-  <ProtectedRoute><AppLayout>{children}</AppLayout></ProtectedRoute>
+const Page = ({ children }: { children: React.ReactNode }) => (
+  <AppLayout>{children}</AppLayout>
 );
 
 const App = () => (
@@ -26,20 +23,17 @@ const App = () => (
     <TooltipProvider>
       <Toaster />
       <Sonner />
-      <BrowserRouter>
-        <AuthProvider>
-          <Routes>
-            <Route path="/login" element={<Login />} />
-            <Route path="/" element={<ProtectedPage><Dashboard /></ProtectedPage>} />
-            <Route path="/buscar" element={<ProtectedPage><SearchProcesses /></ProtectedPage>} />
-            <Route path="/licitacao/:source/:externalId" element={<ProtectedPage><ProcessDetail /></ProtectedPage>} />
-            <Route path="/funil" element={<ProtectedPage><Funnel /></ProtectedPage>} />
-            <Route path="/documentos" element={<ProtectedPage><Documents /></ProtectedPage>} />
-            <Route path="/configuracoes" element={<ProtectedPage><SettingsPage /></ProtectedPage>} />
-            <Route path="*" element={<NotFound />} />
-          </Routes>
-        </AuthProvider>
-      </BrowserRouter>
+      <HashRouter>
+        <Routes>
+          <Route path="/" element={<Page><Dashboard /></Page>} />
+          <Route path="/buscar" element={<Page><SearchProcesses /></Page>} />
+          <Route path="/licitacao/:source/:externalId" element={<Page><ProcessDetail /></Page>} />
+          <Route path="/funil" element={<Page><Funnel /></Page>} />
+          <Route path="/documentos" element={<Page><Documents /></Page>} />
+          <Route path="/configuracoes" element={<Page><SettingsPage /></Page>} />
+          <Route path="*" element={<NotFound />} />
+        </Routes>
+      </HashRouter>
     </TooltipProvider>
   </QueryClientProvider>
 );

@@ -1,9 +1,18 @@
 import { SidebarProvider, SidebarTrigger } from '@/components/ui/sidebar';
 import { AppSidebar } from './AppSidebar';
-import { useAuth } from '@/contexts/AuthContext';
+import { useEffect, useState } from 'react';
+import { getSettings } from '@/lib/store';
+import { SETTINGS_UPDATED_EVENT } from '@/pages/Settings';
 
 export function AppLayout({ children }: { children: React.ReactNode }) {
-  const { profile } = useAuth();
+  const [name, setName] = useState('');
+
+  useEffect(() => {
+    const load = () => getSettings().then(s => setName(s.full_name));
+    load();
+    window.addEventListener(SETTINGS_UPDATED_EVENT, load);
+    return () => window.removeEventListener(SETTINGS_UPDATED_EVENT, load);
+  }, []);
 
   return (
     <SidebarProvider>
@@ -13,9 +22,9 @@ export function AppLayout({ children }: { children: React.ReactNode }) {
           <header className="sticky top-0 z-30 flex h-14 items-center gap-4 border-b border-border bg-background/95 px-4 backdrop-blur supports-[backdrop-filter]:bg-background/60">
             <SidebarTrigger className="text-muted-foreground" />
             <div className="ml-auto flex items-center gap-3">
-              <span className="text-sm text-muted-foreground">{profile?.full_name || profile?.email}</span>
+              <span className="text-sm text-muted-foreground">{name || 'Usuário'}</span>
               <div className="flex h-8 w-8 items-center justify-center rounded-full bg-primary text-xs font-medium text-primary-foreground">
-                {(profile?.full_name || profile?.email || 'U').charAt(0).toUpperCase()}
+                {(name || 'U').charAt(0).toUpperCase()}
               </div>
             </div>
           </header>
