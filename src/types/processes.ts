@@ -22,25 +22,30 @@ export interface NormalizedProcess {
   status: string | null;
   source_portal: string | null;
   external_url: string | null;
+  homologated_value: number | null;
+  status_id: number | null;
 }
+
+export type Situation = 'abertas' | 'encerradas' | 'revogadas' | 'anuladas' | 'suspensas' | 'todas';
 
 export interface SearchFilters {
   searchText?: string;
   excludeText?: string;
-  modality?: string;
+  /** Código de modalidade do PNCP (1–13). */
+  modality?: number;
+  situation?: Situation;
   openDateStart?: string;
   openDateEnd?: string;
   closeDateStart?: string;
   closeDateEnd?: string;
+  pubDateStart?: string;
+  pubDateEnd?: string;
   uf?: string;
   city?: string;
   agency?: string;
   srp?: string;
   minValue?: number;
   maxValue?: number;
-  status?: string;
-  page?: number;
-  pageSize?: number;
 }
 
 export interface SourceStatus {
@@ -49,11 +54,3 @@ export interface SourceStatus {
   message?: string;
 }
 
-export interface SearchResult {
-  data: NormalizedProcess[];
-  totalRecords: number;
-  page: number;
-  pageSize: number;
-  sources: SourceStatus[];
-  demoMode: boolean;
-}

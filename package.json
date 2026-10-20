@@ -9,8 +9,8 @@
     "build:dev": "vite build --mode development",
     "lint": "eslint .",
     "preview": "vite preview",
-    "test": "vitest run",
-    "test:watch": "vitest"
+    "test": "TZ=America/Sao_Paulo vitest run",
+    "test:watch": "TZ=America/Sao_Paulo vitest"
   },
   "dependencies": {
     "@hookform/resolvers": "^3.10.0",

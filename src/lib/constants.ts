@@ -1,16 +1,24 @@
+import type { Situation } from '@/types/processes';
+
 export function formatCurrency(value: number | null | undefined): string {
   if (value == null) return '—';
   return new Intl.NumberFormat('pt-BR', { style: 'currency', currency: 'BRL' }).format(value);
 }
 
+/** Converte string da API em Date; datas só-dia são lidas no fuso local, não em UTC. */
+function parseDate(date: string): Date {
+  const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(date);
+  return m ? new Date(Number(m[1]), Number(m[2]) - 1, Number(m[3])) : new Date(date);
+}
+
 export function formatDate(date: string | null | undefined): string {
   if (!date) return '—';
-  return new Date(date).toLocaleDateString('pt-BR');
+  return parseDate(date).toLocaleDateString('pt-BR');
 }
 
 export function formatDateTime(date: string | null | undefined): string {
   if (!date) return '—';
-  return new Date(date).toLocaleDateString('pt-BR', { day: '2-digit', month: '2-digit', year: 'numeric', hour: '2-digit', minute: '2-digit' });
+  return parseDate(date).toLocaleDateString('pt-BR', { day: '2-digit', month: '2-digit', year: 'numeric', hour: '2-digit', minute: '2-digit' });
 }
 
 export const FUNNEL_STAGES = [
@@ -38,23 +46,11 @@ export const UF_LIST = [
   'PB','PE','PI','PR','RJ','RN','RO','RR','RS','SC','SE','SP','TO'
 ] as const;
 
-export const MODALITIES = [
-  'Pregão Eletrônico',
-  'Pregão Presencial',
-  'Concorrência',
-  'Tomada de Preços',
-  'Convite',
-  'Dispensa de Licitação',
-  'Inexigibilidade',
-  'Leilão',
-  'Diálogo Competitivo',
-] as const;
-
-export const STATUS_OPTIONS = [
-  'Aberto',
-  'Em andamento',
-  'Encerrado',
-  'Suspenso',
-  'Cancelado',
-  'Deserto',
-] as const;
+export const SITUATION_OPTIONS: { value: Situation; label: string }[] = [
+  { value: 'abertas', label: 'Abertas (recebendo propostas)' },
+  { value: 'encerradas', label: 'Encerradas' },
+  { value: 'revogadas', label: 'Revogadas' },
+  { value: 'anuladas', label: 'Anuladas' },
+  { value: 'suspensas', label: 'Suspensas' },
+  { value: 'todas', label: 'Todas' },
+];
