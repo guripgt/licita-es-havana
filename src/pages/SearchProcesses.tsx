@@ -1,9 +1,8 @@
-import { useEffect, useState, useCallback } from 'react';
-import { supabase } from '@/integrations/supabase/client';
-import { useAuth } from '@/contexts/AuthContext';
-import { formatCurrency, formatDate, UF_LIST, MODALITIES, STATUS_OPTIONS } from '@/lib/constants';
-import { searchProcesses } from '@/lib/searchApi';
-import type { NormalizedProcess, SearchFilters, SourceStatus } from '@/types/processes';
+import { useEffect, useRef, useState } from 'react';
+import { formatCurrency, formatDate, UF_LIST, SITUATION_OPTIONS } from '@/lib/constants';
+import { createSearch, validateFilters, PNCP_MODALITIES } from '@/lib/pncp';
+import { listProcesses, processKey, saveProcess } from '@/lib/store';
+import type { NormalizedProcess, SearchFilters, Situation, SourceStatus } from '@/types/processes';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
@@ -13,10 +12,9 @@ import { Star, Eye, FolderPlus, ChevronDown, ChevronUp, X, AlertTriangle, Loader
 import { useNavigate } from 'react-router-dom';
 import { toast } from 'sonner';
 
-const PAGE_SIZES = [50, 100, 200] as const;
+type SearchSession = ReturnType<typeof createSearch>;
 
 const SearchProcesses = () => {
-  const { profile } = useAuth();
   const navigate = useNavigate();
   const [processes, setProcesses] = useState<NormalizedProcess[]>([]);
   const [loading, setLoading] = useState(false);
@@ -24,11 +22,11 @@ const SearchProcesses = () => {
   const [showFilters, setShowFilters] = useState(true);
   const [favorites, setFavorites] = useState<Set<string>>(new Set());
   const [sources, setSources] = useState<SourceStatus[]>([]);
-  const [demoMode, setDemoMode] = useState(false);
+  const [scanned, setScanned] = useState(0);
   const [totalRecords, setTotalRecords] = useState(0);
-  const [page, setPage] = useState(1);
-  const [pageSize, setPageSize] = useState<number>(50);
+  const [hasMore, setHasMore] = useState(false);
   const [hasSearched, setHasSearched] = useState(false);
+  const sessionRef = useRef<SearchSession | null>(null);
 
   // Restore filters from localStorage
   const savedFilters = (() => {
@@ -41,47 +39,54 @@ const SearchProcesses = () => {
   // Filters
   const [searchText, setSearchText] = useState(savedFilters.searchText || '');
   const [excludeText, setExcludeText] = useState(savedFilters.excludeText || '');
-  const [modality, setModality] = useState(savedFilters.modality || 'all');
+  const [modality, setModality] = useState<string>(
+    PNCP_MODALITIES.some(m => String(m.code) === savedFilters.modality) ? savedFilters.modality : 'all'
+  );
   const [openDateStart, setOpenDateStart] = useState(savedFilters.openDateStart || '');
   const [openDateEnd, setOpenDateEnd] = useState(savedFilters.openDateEnd || '');
   const [closeDateStart, setCloseDateStart] = useState(savedFilters.closeDateStart || '');
   const [closeDateEnd, setCloseDateEnd] = useState(savedFilters.closeDateEnd || '');
+  const [pubDateStart, setPubDateStart] = useState(savedFilters.pubDateStart || '');
+  const [pubDateEnd, setPubDateEnd] = useState(savedFilters.pubDateEnd || '');
   const [uf, setUf] = useState(savedFilters.uf || 'all');
   const [city, setCity] = useState(savedFilters.city || '');
   const [agency, setAgency] = useState(savedFilters.agency || '');
   const [srp, setSrp] = useState(savedFilters.srp || 'all');
   const [minValue, setMinValue] = useState(savedFilters.minValue || '');
   const [maxValue, setMaxValue] = useState(savedFilters.maxValue || '');
-  const [status, setStatus] = useState(savedFilters.status || 'all');
+  const [situation, setSituation] = useState<Situation>(
+    SITUATION_OPTIONS.some(o => o.value === savedFilters.situation) ? savedFilters.situation : 'abertas'
+  );
 
-  const buildFilters = useCallback((p: number): SearchFilters => ({
+  const buildFilters = (): SearchFilters => ({
     searchText: searchText || undefined,
     excludeText: excludeText || undefined,
-    modality: modality !== 'all' ? modality : undefined,
+    modality: modality !== 'all' ? Number(modality) : undefined,
+    situation,
     openDateStart: openDateStart || undefined,
     openDateEnd: openDateEnd || undefined,
     closeDateStart: closeDateStart || undefined,
     closeDateEnd: closeDateEnd || undefined,
+    pubDateStart: situation !== 'abertas' && pubDateStart ? pubDateStart : undefined,
+    pubDateEnd: situation !== 'abertas' && pubDateEnd ? pubDateEnd : undefined,
     uf: uf !== 'all' ? uf : undefined,
     city: city || undefined,
     agency: agency || undefined,
     srp: srp !== 'all' ? srp : undefined,
     minValue: minValue ? parseFloat(minValue) : undefined,
     maxValue: maxValue ? parseFloat(maxValue) : undefined,
-    status: status !== 'all' ? status : undefined,
-    page: p,
-    pageSize,
-  }), [searchText, excludeText, modality, openDateStart, openDateEnd, closeDateStart, closeDateEnd, uf, city, agency, srp, minValue, maxValue, status, pageSize]);
+  });
 
-  const fetchProcesses = useCallback(async (targetPage: number, append = false) => {
+  const runBatch = async (session: SearchSession, append: boolean) => {
     if (append) setLoadingMore(true); else setLoading(true);
     try {
-      const filters = buildFilters(targetPage);
-      const result = await searchProcesses(filters);
-      setProcesses(prev => append ? [...prev, ...result.data] : result.data);
-      setSources(result.sources);
-      setDemoMode(result.demoMode);
-      setTotalRecords(result.totalRecords);
+      const batch = await session.next();
+      if (sessionRef.current !== session) return; // uma busca mais nova começou
+      setProcesses(prev => append ? [...prev, ...batch.data] : batch.data);
+      setSources(batch.sources);
+      setScanned(batch.scanned);
+      setTotalRecords(batch.total);
+      setHasMore(batch.hasMore);
       setHasSearched(true);
     } catch (err: any) {
       toast.error(err.message || 'Erro ao buscar licitações');
@@ -90,73 +95,34 @@ const SearchProcesses = () => {
       setLoading(false);
       setLoadingMore(false);
     }
-  }, [buildFilters]);
+  };
+
+  const startSearch = () => {
+    const filters = buildFilters();
+    const error = validateFilters(filters);
+    if (error) { toast.error(error); return; }
+    const session = createSearch(filters);
+    sessionRef.current = session;
+    runBatch(session, false);
+  };
 
   const loadFavorites = async () => {
-    if (!profile?.company_id) return;
-    const { data } = await supabase.from('saved_processes').select('public_process_id').eq('company_id', profile.company_id).eq('is_favorite', true);
-    setFavorites(new Set((data || []).map((d: any) => d.public_process_id)));
+    const saved = await listProcesses();
+    setFavorites(new Set(saved.filter(p => p.is_favorite).map(p => p.key)));
   };
 
   useEffect(() => {
-    // Se existem filtros salvos (ex: usuário voltou da página de detalhes) e a busca ainda não foi feita
-    const hasFilters = Object.keys(savedFilters).length > 0;
-    if (hasFilters && !hasSearched && !loading) {
-      fetchProcesses(1);
-    }
+    loadFavorites();
+    // Se existem filtros salvos (ex: usuário voltou da página de detalhes), refaz a busca
+    if (Object.keys(savedFilters).length > 0) startSearch();
   }, []); // Executa apenas no mount do componente
 
-  const upsertPublicProcess = async (process: NormalizedProcess): Promise<string> => {
-    const { data: existing } = await supabase
-      .from('public_processes')
-      .select('id')
-      .eq('source', process.source)
-      .eq('external_id', process.external_id)
-      .maybeSingle();
-
-    if (existing) return existing.id;
-
-    const { data: inserted, error } = await supabase.from('public_processes').insert({
-      external_id: process.external_id,
-      source: process.source,
-      title: process.title,
-      object_description: process.object_description,
-      agency: process.agency,
-      government_level: process.government_level,
-      modality: process.modality,
-      estimated_value: process.estimated_value,
-      is_srp: process.is_srp,
-      state: process.state,
-      city: process.city,
-      publication_date: process.publication_date,
-      opening_date: process.opening_date,
-      closing_date: process.closing_date,
-      status: process.status,
-      source_portal: process.source_portal,
-      external_url: process.external_url,
-    }).select('id').single();
-
-    if (error) throw new Error('Erro ao salvar processo.');
-    return inserted.id;
-  };
-
   const toggleFavorite = async (process: NormalizedProcess) => {
-    if (!profile?.company_id) { toast.error('Configure sua empresa primeiro.'); return; }
+    const key = processKey(process);
+    const isFav = favorites.has(key);
     try {
-      const dbId = await upsertPublicProcess(process);
-      const isFav = favorites.has(dbId);
-      if (isFav) {
-        await supabase.from('saved_processes').delete().eq('company_id', profile.company_id).eq('public_process_id', dbId).eq('is_favorite', true);
-        setFavorites(prev => { const n = new Set(prev); n.delete(dbId); return n; });
-      } else {
-        const { data: existing } = await supabase.from('saved_processes').select('id').eq('company_id', profile.company_id).eq('public_process_id', dbId).maybeSingle();
-        if (existing) {
-          await supabase.from('saved_processes').update({ is_favorite: true }).eq('id', existing.id);
-        } else {
-          await supabase.from('saved_processes').insert({ company_id: profile.company_id, public_process_id: dbId, is_favorite: true });
-        }
-        setFavorites(prev => new Set(prev).add(dbId));
-      }
+      await saveProcess(process, { is_favorite: !isFav });
+      setFavorites(prev => { const n = new Set(prev); if (isFav) n.delete(key); else n.add(key); return n; });
       toast.success(isFav ? 'Removido dos favoritos' : 'Adicionado aos favoritos');
     } catch (err: any) {
       toast.error(err.message || 'Erro ao favoritar');
@@ -164,12 +130,10 @@ const SearchProcesses = () => {
   };
 
   const saveToFunnel = async (process: NormalizedProcess) => {
-    if (!profile?.company_id) { toast.error('Configure sua empresa primeiro.'); return; }
     try {
-      const dbId = await upsertPublicProcess(process);
-      const { data: existing } = await supabase.from('saved_processes').select('id').eq('company_id', profile.company_id).eq('public_process_id', dbId).maybeSingle();
-      if (existing) { toast.info('Processo já está no funil.'); return; }
-      await supabase.from('saved_processes').insert({ company_id: profile.company_id, public_process_id: dbId, funnel_stage: 'Encontrado' });
+      const saved = (await listProcesses()).find(p => p.key === processKey(process));
+      if (saved?.in_funnel) { toast.info('Processo já está no funil.'); return; }
+      await saveProcess(process, { in_funnel: true });
       toast.success('Processo salvo no funil!');
     } catch (err: any) {
       toast.error(err.message || 'Erro ao salvar no funil');
@@ -183,8 +147,8 @@ const SearchProcesses = () => {
 
   const clearFilters = () => {
     setSearchText(''); setExcludeText(''); setModality('all'); setOpenDateStart(''); setOpenDateEnd('');
-    setCloseDateStart(''); setCloseDateEnd(''); setUf('all'); setCity(''); setAgency('');
-    setSrp('all'); setMinValue(''); setMaxValue(''); setStatus('all');
+    setCloseDateStart(''); setCloseDateEnd(''); setPubDateStart(''); setPubDateEnd(''); setUf('all'); setCity(''); setAgency('');
+    setSrp('all'); setMinValue(''); setMaxValue(''); setSituation('abertas');
     localStorage.removeItem('licitacao_filtros');
   };
 
@@ -192,16 +156,13 @@ const SearchProcesses = () => {
     // Persist filters to localStorage
     localStorage.setItem('licitacao_filtros', JSON.stringify({
       searchText, excludeText, modality, openDateStart, openDateEnd,
-      closeDateStart, closeDateEnd, uf, city, agency, srp, minValue, maxValue, status,
+      closeDateStart, closeDateEnd, pubDateStart, pubDateEnd, uf, city, agency, srp, minValue, maxValue, situation,
     }));
-    setPage(1);
-    fetchProcesses(1);
+    startSearch();
   };
 
   const handleLoadMore = () => {
-    const nextPage = page + 1;
-    setPage(nextPage);
-    fetchProcesses(nextPage, true);
+    if (sessionRef.current) runBatch(sessionRef.current, true);
   };
 
   // Status badge helper
@@ -261,12 +222,6 @@ const SearchProcesses = () => {
       {/* Source status badges */}
       {sources.length > 0 && (
         <div className="flex flex-wrap gap-2">
-          {demoMode && (
-            <div className="flex items-center gap-1.5 rounded-lg bg-warning/10 px-3 py-1.5 text-xs font-medium text-warning">
-              <AlertTriangle className="h-3.5 w-3.5" />
-              Modo demonstração — APIs externas indisponíveis
-            </div>
-          )}
           {sources.map((s, i) => (
             <div key={i} className={`flex items-center gap-1.5 rounded-lg px-3 py-1.5 text-xs font-medium ${sourceStatusColor(s)}`}>
               <span className={`h-1.5 w-1.5 rounded-full ${
@@ -310,7 +265,7 @@ const SearchProcesses = () => {
                 <SelectTrigger><SelectValue placeholder="Todas modalidades" /></SelectTrigger>
                 <SelectContent>
                   <SelectItem value="all">Todas modalidades</SelectItem>
-                  {MODALITIES.map(m => <SelectItem key={m} value={m}>{m}</SelectItem>)}
+                  {PNCP_MODALITIES.map(m => <SelectItem key={m.code} value={String(m.code)}>{m.label}</SelectItem>)}
                 </SelectContent>
               </Select>
             </div>
@@ -354,15 +309,30 @@ const SearchProcesses = () => {
             </div>
           </div>
 
+          {situation !== 'abertas' && (
+            <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
+              <div className="space-y-1.5">
+                <Label htmlFor="pubDateStart">Publicação (início)</Label>
+                <Input id="pubDateStart" type="date" value={pubDateStart} onChange={e => setPubDateStart(e.target.value)} />
+              </div>
+              <div className="space-y-1.5">
+                <Label htmlFor="pubDateEnd">Publicação (fim)</Label>
+                <Input id="pubDateEnd" type="date" value={pubDateEnd} onChange={e => setPubDateEnd(e.target.value)} />
+              </div>
+              <p className="self-end pb-2 text-xs text-muted-foreground sm:col-span-2">
+                Sem datas, busca os últimos 90 dias. Período máximo: 365 dias.
+              </p>
+            </div>
+          )}
+
           {/* Row 4: Status, SRP, Values */}
           <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
             <div className="space-y-1.5">
               <Label>Situação</Label>
-              <Select value={status} onValueChange={setStatus}>
-                <SelectTrigger><SelectValue placeholder="Todas situações" /></SelectTrigger>
+              <Select value={situation} onValueChange={v => setSituation(v as Situation)}>
+                <SelectTrigger><SelectValue /></SelectTrigger>
                 <SelectContent>
-                  <SelectItem value="all">Todas situações</SelectItem>
-                  {STATUS_OPTIONS.map(s => <SelectItem key={s} value={s}>{s}</SelectItem>)}
+                  {SITUATION_OPTIONS.map(o => <SelectItem key={o.value} value={o.value}>{o.label}</SelectItem>)}
                 </SelectContent>
               </Select>
             </div>
@@ -397,17 +367,6 @@ const SearchProcesses = () => {
               <X className="mr-1 h-3 w-3" />
               Limpar filtros
             </Button>
-            <div className="ml-auto flex items-center gap-2">
-              <Label className="text-xs text-muted-foreground whitespace-nowrap">Resultados por página:</Label>
-              <Select value={String(pageSize)} onValueChange={v => setPageSize(Number(v))}>
-                <SelectTrigger className="h-8 w-20">
-                  <SelectValue />
-                </SelectTrigger>
-                <SelectContent>
-                  {PAGE_SIZES.map(s => <SelectItem key={s} value={String(s)}>{s}</SelectItem>)}
-                </SelectContent>
-              </Select>
-            </div>
           </div>
         </div>
       )}
@@ -431,7 +390,17 @@ const SearchProcesses = () => {
                 : 'Nenhuma oportunidade encontrada com os filtros aplicados.'}
             </p>
             {hasSearched && (
-              <p className="text-xs text-muted-foreground mt-1">Tente ampliar o período, mudar a modalidade ou remover filtros.</p>
+              <p className="text-xs text-muted-foreground mt-1">
+                {hasMore
+                  ? `${scanned.toLocaleString('pt-BR')} de ${totalRecords.toLocaleString('pt-BR')} editais analisados até agora.`
+                  : 'Tente ampliar o período, mudar a modalidade ou remover filtros.'}
+              </p>
+            )}
+            {hasSearched && hasMore && (
+              <Button variant="outline" size="sm" className="mt-3" disabled={loadingMore} onClick={handleLoadMore}>
+                {loadingMore ? <Loader2 className="mr-1.5 h-4 w-4 animate-spin" /> : null}
+                Buscar mais
+              </Button>
             )}
           </div>
         ) : (
@@ -461,7 +430,7 @@ const SearchProcesses = () => {
                       <tr key={p.id} className="border-b border-border/50 hover:bg-muted/30 transition-colors">
                         <td className="px-3 py-2.5">
                           <button onClick={() => toggleFavorite(p)} className="text-muted-foreground hover:text-warning transition-colors">
-                            <Star className={`h-4 w-4 ${favorites.has(p.id) ? 'fill-warning text-warning' : ''}`} />
+                            <Star className={`h-4 w-4 ${favorites.has(processKey(p)) ? 'fill-warning text-warning' : ''}`} />
                           </button>
                         </td>
                         <td className="px-3 py-2.5">
@@ -531,12 +500,11 @@ const SearchProcesses = () => {
             {/* Footer with count + load more */}
             <div className="flex items-center justify-between border-t border-border px-4 py-3">
               <p className="text-xs text-muted-foreground">
-                <span className="font-semibold text-foreground">{processes.length}</span> resultado{processes.length !== 1 ? 's' : ''} exibido{processes.length !== 1 ? 's' : ''}
-                {totalRecords > processes.length && (
-                  <span> de <span className="font-semibold text-foreground">~{totalRecords.toLocaleString('pt-BR')}</span> encontrados</span>
-                )}
+                <span className="font-semibold text-foreground">{processes.length}</span> resultado{processes.length !== 1 ? 's' : ''} em{' '}
+                <span className="font-semibold text-foreground">{scanned.toLocaleString('pt-BR')}</span> de{' '}
+                <span className="font-semibold text-foreground">{totalRecords.toLocaleString('pt-BR')}</span> editais analisados
               </p>
-              {totalRecords > processes.length && (
+              {hasMore && (
                 <Button
                   variant="outline"
                   size="sm"
@@ -544,7 +512,7 @@ const SearchProcesses = () => {
                   onClick={handleLoadMore}
                 >
                   {loadingMore ? <Loader2 className="mr-1.5 h-4 w-4 animate-spin" /> : null}
-                  Carregar mais
+                  Buscar mais
                 </Button>
               )}
             </div>

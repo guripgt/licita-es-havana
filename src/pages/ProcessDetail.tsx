@@ -1,8 +1,7 @@
 import { useEffect, useState } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
-import { supabase } from '@/integrations/supabase/client';
-import { useAuth } from '@/contexts/AuthContext';
 import { formatCurrency, formatDate, formatDateTime, FUNNEL_STAGES } from '@/lib/constants';
+import { getProcess, listDocuments, processKey, saveProcess, type CompanyDocument, type SavedProcess } from '@/lib/store';
 import type { NormalizedProcess } from '@/types/processes';
 import { Button } from '@/components/ui/button';
 import { Textarea } from '@/components/ui/textarea';
@@ -11,173 +10,67 @@ import { ArrowLeft, Star, ExternalLink, FolderPlus, FileText, Loader2 } from 'lu
 import { toast } from 'sonner';
 
 const ProcessDetail = () => {
-  const { source, externalId, id } = useParams<{ source?: string; externalId?: string; id?: string }>();
-  const { profile } = useAuth();
+  const { source, externalId } = useParams<{ source: string; externalId: string }>();
   const navigate = useNavigate();
-  const [process, setProcess] = useState<any>(null);
-  const [savedProcess, setSavedProcess] = useState<any>(null);
+  const [process, setProcess] = useState<NormalizedProcess | null>(null);
+  const [savedProcess, setSavedProcess] = useState<SavedProcess | null>(null);
   const [notes, setNotes] = useState('');
-  const [linkedDocs, setLinkedDocs] = useState<any[]>([]);
-  const [companyDocs, setCompanyDocs] = useState<any[]>([]);
+  const [companyDocs, setCompanyDocs] = useState<CompanyDocument[]>([]);
   const [loading, setLoading] = useState(true);
-  const [isExternal, setIsExternal] = useState(false);
 
   useEffect(() => {
     const load = async () => {
-      let proc: any = null;
-      const decodedExternalId = externalId ? decodeURIComponent(externalId) : null;
+      setLoading(true);
+      const decodedExternalId = externalId ? decodeURIComponent(externalId) : '';
+      let proc: NormalizedProcess | null = null;
+      let saved: SavedProcess | null = null;
 
-      // Route 1: /licitacao/:source/:externalId (new stable route)
       if (source && decodedExternalId) {
-        // Try DB first
-        const { data: dbProc } = await supabase
-          .from('public_processes')
-          .select('*')
-          .eq('source', source)
-          .eq('external_id', decodedExternalId)
-          .maybeSingle();
-
-        if (dbProc) {
-          proc = dbProc;
-          setIsExternal(false);
+        saved = (await getProcess(processKey({ source, external_id: decodedExternalId }))) ?? null;
+        if (saved) {
+          proc = saved;
         } else {
-          // Try sessionStorage
           const cached = sessionStorage.getItem(`process_${source}_${decodedExternalId}`);
           if (cached) {
-            proc = JSON.parse(cached);
-            setIsExternal(true);
-          }
-        }
-      }
-      // Route 2: /licitacao/:id (legacy route, DB UUID lookup)
-      else if (id) {
-        const { data: dbProc } = await supabase.from('public_processes').select('*').eq('id', id).maybeSingle();
-        if (dbProc) {
-          proc = dbProc;
-          setIsExternal(false);
-        } else {
-          // Try sessionStorage with old format
-          const cached = sessionStorage.getItem(`process_${id}`);
-          if (cached) {
-            proc = JSON.parse(cached);
-            setIsExternal(true);
+            try { proc = JSON.parse(cached); } catch { proc = null; }
           }
         }
       }
 
       setProcess(proc);
-
-      // Load saved_process and docs
-      const dbId = proc && !isExternal && proc.id && !proc.id.startsWith('pncp_') && !proc.id.startsWith('compras_gov_')
-        ? proc.id
-        : null;
-
-      if (profile?.company_id) {
-        if (dbId) {
-          const { data: sp } = await supabase.from('saved_processes').select('*').eq('company_id', profile.company_id).eq('public_process_id', dbId).maybeSingle();
-          setSavedProcess(sp);
-          setNotes(sp?.notes || '');
-          if (sp) {
-            const { data: pd } = await supabase.from('process_documents').select('*, company_documents(*)').eq('saved_process_id', sp.id);
-            setLinkedDocs(pd || []);
-          }
-        }
-        const { data: cd } = await supabase.from('company_documents').select('*').eq('company_id', profile.company_id);
-        setCompanyDocs(cd || []);
-      }
-
+      setSavedProcess(saved);
+      setNotes(saved?.notes || '');
+      setCompanyDocs(await listDocuments());
       setLoading(false);
     };
     load();
-  }, [source, externalId, id, profile?.company_id]);
+  }, [source, externalId]);
 
-  const upsertAndGetDbId = async (): Promise<string> => {
-    if (!isExternal && process?.id && !process.id.startsWith('pncp_') && !process.id.startsWith('compras_gov_')) {
-      return process.id;
-    }
-
-    // Upsert external process to public_processes
-    const src = process.source || source;
-    const extId = process.external_id || (externalId ? decodeURIComponent(externalId) : null);
-    if (!src || !extId) throw new Error('Dados insuficientes para salvar');
-
-    const { data: existing } = await supabase
-      .from('public_processes')
-      .select('id')
-      .eq('source', src)
-      .eq('external_id', extId)
-      .maybeSingle();
-
-    if (existing) return existing.id;
-
-    const { data: inserted, error } = await supabase.from('public_processes').insert({
-      external_id: extId,
-      source: src,
-      title: process.title,
-      object_description: process.object_description,
-      agency: process.agency,
-      government_level: process.government_level,
-      modality: process.modality,
-      estimated_value: process.estimated_value,
-      is_srp: process.is_srp,
-      state: process.state,
-      city: process.city,
-      publication_date: process.publication_date,
-      opening_date: process.opening_date,
-      closing_date: process.closing_date,
-      status: process.status,
-      source_portal: process.source_portal,
-      external_url: process.external_url,
-    }).select('id').single();
-
-    if (error) throw new Error('Erro ao salvar processo no banco');
-    return inserted.id;
-  };
-
-  const saveOrUpdate = async (stage?: string) => {
-    if (!profile?.company_id) { toast.error('Configure sua empresa.'); return; }
+  const update = async (patch: Parameters<typeof saveProcess>[1], message: string) => {
+    if (!process) return;
     try {
-      const dbId = await upsertAndGetDbId();
-      if (savedProcess) {
-        await supabase.from('saved_processes').update({ notes, ...(stage ? { funnel_stage: stage } : {}) }).eq('id', savedProcess.id);
-        setSavedProcess({ ...savedProcess, notes, ...(stage ? { funnel_stage: stage } : {}) });
-      } else {
-        const { data } = await supabase.from('saved_processes').insert({ company_id: profile.company_id, public_process_id: dbId, notes, funnel_stage: stage || 'Encontrado' }).select().single();
-        setSavedProcess(data);
-        setIsExternal(false);
-      }
-      toast.success('Salvo!');
+      const saved = await saveProcess(process, patch);
+      setSavedProcess(saved.in_funnel || saved.is_favorite ? saved : null);
+      toast.success(message);
     } catch (err: any) {
       toast.error(err.message || 'Erro ao salvar');
     }
   };
 
-  const toggleFavorite = async () => {
-    if (!profile?.company_id) { toast.error('Configure sua empresa.'); return; }
-    try {
-      const dbId = await upsertAndGetDbId();
-      if (!savedProcess) {
-        const { data } = await supabase.from('saved_processes').insert({ company_id: profile.company_id, public_process_id: dbId, is_favorite: true, funnel_stage: 'Encontrado' }).select().single();
-        setSavedProcess(data);
-        setIsExternal(false);
-        toast.success('Adicionado aos favoritos');
-        return;
-      }
-      await supabase.from('saved_processes').update({ is_favorite: !savedProcess.is_favorite }).eq('id', savedProcess.id);
-      setSavedProcess({ ...savedProcess, is_favorite: !savedProcess.is_favorite });
-      toast.success(savedProcess.is_favorite ? 'Removido dos favoritos' : 'Adicionado aos favoritos');
-    } catch (err: any) {
-      toast.error(err.message || 'Erro ao favoritar');
-    }
+  const saveOrUpdate = (stage?: string) =>
+    update({ in_funnel: true, notes, ...(stage ? { funnel_stage: stage } : {}) }, 'Salvo!');
+
+  const toggleFavorite = () => {
+    const isFav = !!savedProcess?.is_favorite;
+    return update({ is_favorite: !isFav }, isFav ? 'Removido dos favoritos' : 'Adicionado aos favoritos');
   };
 
-  const linkDocument = async (docId: string) => {
-    if (!savedProcess) { toast.error('Salve o processo primeiro.'); return; }
-    await supabase.from('process_documents').insert({ saved_process_id: savedProcess.id, company_document_id: docId });
-    const { data } = await supabase.from('process_documents').select('*, company_documents(*)').eq('saved_process_id', savedProcess.id);
-    setLinkedDocs(data || []);
-    toast.success('Documento vinculado!');
-  };
+  const linkDocument = (docId: string) =>
+    update({ in_funnel: true, linked_doc_ids: [...(savedProcess?.linked_doc_ids || []), docId] }, 'Documento vinculado!');
+
+  const linkedIds = savedProcess?.linked_doc_ids || [];
+  const linkedDocs = companyDocs.filter(d => linkedIds.includes(d.id));
+  const isExternal = !savedProcess;
 
   if (loading) return <div className="flex items-center justify-center py-20"><Loader2 className="h-8 w-8 animate-spin text-primary" /></div>;
   if (!process) return (
@@ -198,6 +91,7 @@ const ProcessDetail = () => {
     { label: 'Esfera', value: process.government_level },
     { label: 'Modalidade', value: process.modality },
     { label: 'Valor Estimado', value: formatCurrency(process.estimated_value) },
+    ...(process.homologated_value != null ? [{ label: 'Valor Homologado', value: formatCurrency(process.homologated_value) }] : []),
     { label: 'SRP', value: process.is_srp === true ? 'Sim' : process.is_srp === false ? 'Não' : '—' },
     { label: 'UF', value: process.state },
     { label: 'Cidade', value: process.city },
@@ -273,19 +167,19 @@ const ProcessDetail = () => {
         <div className="space-y-4">
           <div className="rounded-xl bg-card p-5 shadow-card space-y-4">
             <h2 className="text-sm font-semibold text-card-foreground">Ações</h2>
-            {savedProcess && (
+            {savedProcess?.in_funnel && (
               <div>
                 <p className="text-xs text-muted-foreground mb-1">Etapa atual</p>
                 <p className="text-sm font-medium text-card-foreground">{savedProcess.funnel_stage}</p>
               </div>
             )}
-            <Select onValueChange={stage => saveOrUpdate(stage)} value={savedProcess?.funnel_stage || ''}>
+            <Select onValueChange={stage => saveOrUpdate(stage)} value={savedProcess?.in_funnel ? savedProcess.funnel_stage : ''}>
               <SelectTrigger><SelectValue placeholder="Mover para etapa..." /></SelectTrigger>
               <SelectContent>
                 {FUNNEL_STAGES.map(s => <SelectItem key={s} value={s}>{s}</SelectItem>)}
               </SelectContent>
             </Select>
-            {!savedProcess && (
+            {!savedProcess?.in_funnel && (
               <Button className="w-full gap-1" onClick={() => saveOrUpdate('Encontrado')}>
                 <FolderPlus className="h-4 w-4" /> Salvar no funil
               </Button>
@@ -298,19 +192,19 @@ const ProcessDetail = () => {
               <p className="text-xs text-muted-foreground">Nenhum documento vinculado.</p>
             ) : (
               <div className="space-y-2">
-                {linkedDocs.map((ld: any) => (
+                {linkedDocs.map(ld => (
                   <div key={ld.id} className="flex items-center gap-2 text-sm">
                     <FileText className="h-3.5 w-3.5 text-muted-foreground" />
-                    <span className="truncate text-card-foreground">{ld.company_documents?.name}</span>
+                    <span className="truncate text-card-foreground">{ld.name}</span>
                   </div>
                 ))}
               </div>
             )}
-            {savedProcess && companyDocs.length > 0 && (
-              <Select onValueChange={linkDocument}>
+            {companyDocs.length > linkedDocs.length && (
+              <Select value="" onValueChange={linkDocument}>
                 <SelectTrigger className="text-xs"><SelectValue placeholder="Anexar documento..." /></SelectTrigger>
                 <SelectContent>
-                  {companyDocs.filter(d => !linkedDocs.some((ld: any) => ld.company_document_id === d.id)).map((d: any) => (
+                  {companyDocs.filter(d => !linkedIds.includes(d.id)).map(d => (
                     <SelectItem key={d.id} value={d.id}>{d.name}</SelectItem>
                   ))}
                 </SelectContent>
