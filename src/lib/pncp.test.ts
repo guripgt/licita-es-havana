@@ -96,12 +96,49 @@ describe('fetchPncpPage', () => {
     expect(f).toHaveBeenCalledTimes(2);
   });
 
-  it('tenta de novo após erro de rede', async () => {
+  it('trata falha de rede como limite (429 do PNCP vem sem CORS) e espera antes de repetir', async () => {
+    vi.useFakeTimers();
     const f = vi.fn()
+      .mockRejectedValueOnce(new TypeError('Failed to fetch'))
       .mockRejectedValueOnce(new TypeError('Failed to fetch'))
       .mockResolvedValueOnce(jsonResponse(200, { data: [], totalRegistros: 3, totalPaginas: 1 }));
     vi.stubGlobal('fetch', f);
-    await expect(fetchPncpPage('https://x')).resolves.toMatchObject({ totalRegistros: 3, totalPaginas: 1 });
+    const result = fetchPncpPage('https://x');
+    await vi.advanceTimersByTimeAsync(2999);
+    expect(f).toHaveBeenCalledTimes(1);
+    await vi.advanceTimersByTimeAsync(1 + 6000);
+    await expect(result).resolves.toMatchObject({ totalRegistros: 3, totalPaginas: 1 });
+    vi.useRealTimers();
+  });
+});
+
+describe('fetchPncpPage com limite de requisições (429)', () => {
+  afterEach(() => vi.useRealTimers());
+
+  it('espera e tenta de novo até o PNCP liberar', async () => {
+    vi.useFakeTimers();
+    const f = vi.fn()
+      .mockResolvedValueOnce(jsonResponse(429))
+      .mockResolvedValueOnce(jsonResponse(429))
+      .mockResolvedValueOnce(jsonResponse(200, { data: [], totalRegistros: 5, totalPaginas: 1 }));
+    vi.stubGlobal('fetch', f);
+    const result = fetchPncpPage('https://x');
+    await vi.advanceTimersByTimeAsync(3000);
+    expect(f).toHaveBeenCalledTimes(2);
+    await vi.advanceTimersByTimeAsync(6000);
+    await expect(result).resolves.toMatchObject({ totalRegistros: 5 });
+    expect(f).toHaveBeenCalledTimes(3);
+  });
+
+  it('desiste após 3 esperas com mensagem clara', async () => {
+    vi.useFakeTimers();
+    const f = vi.fn().mockImplementation(async () => jsonResponse(429));
+    vi.stubGlobal('fetch', f);
+    const result = fetchPncpPage('https://x');
+    const assertion = expect(result).rejects.toThrow('PNCP limitou as consultas');
+    await vi.advanceTimersByTimeAsync(3000 + 6000 + 12000);
+    await assertion;
+    expect(f).toHaveBeenCalledTimes(4);
   });
 });
 
@@ -155,6 +192,7 @@ describe('applyLocalFilters', () => {
     expect(ids('anuladas')).toEqual(['anu']);
     expect(ids('suspensas')).toEqual(['sus']);
     expect(ids('todas')).toHaveLength(5);
+    expect(ids('abertas')).toEqual(['aberta', 'encerrada']); // /proposta já limita pelo prazo; tira revogadas etc.
   });
 });
 
@@ -208,6 +246,28 @@ describe('createSearch', () => {
     expect(batch.data).toHaveLength(12);
     expect(batch.sources[0].status).toBe('error');
     expect(batch.sources[0].message).toMatch(/^Falha em 1 consulta\(s\): Erro interno/);
+  });
+
+  it('tenta de novo no próximo lote a modalidade que falhou', async () => {
+    let failing = true;
+    stubPages(() => failing
+      ? jsonResponse(500, { message: 'Erro interno' })
+      : jsonResponse(200, { data: [record('ok')], totalRegistros: 1, totalPaginas: 1 }));
+    const search = createSearch({ modality: 6 }, today);
+    const first = await search.next();
+    expect(first.hasMore).toBe(true);
+    failing = false;
+    const second = await search.next();
+    expect(second.data).toHaveLength(1);
+    expect(second.hasMore).toBe(false);
+  });
+
+  it('avisa o progresso a cada página lida', async () => {
+    stubPages((_m, page) => jsonResponse(200, { data: [record(`p${page}`)], totalRegistros: 3, totalPaginas: 3 }));
+    const partials: number[] = [];
+    const batch = await createSearch({ modality: 6 }, today).next(p => partials.push(p.data.length));
+    expect(partials).toEqual([1, 2, 3]);
+    expect(batch.data).toHaveLength(3);
   });
 
   it('não repete registro que aparece em duas páginas', async () => {

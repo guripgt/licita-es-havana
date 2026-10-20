@@ -7,7 +7,9 @@ import type { NormalizedProcess, SearchFilters, SourceStatus } from '@/types/pro
 
 const PNCP_BASE = 'https://pncp.gov.br/api/consulta';
 const PAGE_SIZE = 50; // máximo aceito pela API
-const REQUEST_TIMEOUT_MS = 30000;
+const REQUEST_TIMEOUT_MS = 60000; // o PNCP chega a levar ~30s em consultas grandes
+/** Esperas após HTTP 429; o PNCP não envia Retry-After e o bloqueio dura ~5–10s. */
+const RATE_LIMIT_DELAYS_MS = [3000, 6000, 12000];
 const DAY_MS = 24 * 60 * 60 * 1000;
 
 export const PNCP_MODALITIES: { code: number; label: string }[] = [
@@ -102,12 +104,17 @@ export function normalizePncpRecord(record: any): NormalizedProcess {
   };
 }
 
+class RateLimitError extends Error {}
+
+const sleep = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
+
 async function fetchOnce(url: string) {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
   try {
     const resp = await fetch(url, { signal: controller.signal });
     if (resp.status === 204) return { data: [], totalRegistros: 0, totalPaginas: 0 };
+    if (resp.status === 429) throw new RateLimitError('PNCP limitou as consultas');
     const text = await resp.text();
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     let json: any = null;
@@ -120,22 +127,36 @@ async function fetchOnce(url: string) {
     };
   } catch (e) {
     if (e instanceof DOMException && e.name === 'AbortError') throw new Error('Tempo esgotado ao consultar o PNCP');
+    // O 429 do PNCP chega sem cabeçalho CORS: no navegador ele aparece só como falha de rede.
+    if (e instanceof TypeError) throw new RateLimitError('PNCP limitou as consultas');
     throw e;
   } finally {
     clearTimeout(timer);
   }
 }
 
+/** Busca uma página; espera e repete quando o PNCP limita (429 ou falha de rede) e repete uma vez em outras falhas. */
 export async function fetchPncpPage(url: string): Promise<{ data: NormalizedProcess[]; totalRegistros: number; totalPaginas: number }> {
-  try {
-    return await fetchOnce(url);
-  } catch {
-    return await fetchOnce(url);
+  let rateLimitHits = 0;
+  let otherFailures = 0;
+  for (;;) {
+    try {
+      return await fetchOnce(url);
+    } catch (e) {
+      if (e instanceof RateLimitError) {
+        if (rateLimitHits >= RATE_LIMIT_DELAYS_MS.length) {
+          throw new Error('PNCP limitou as consultas. Aguarde alguns segundos e clique em "Buscar mais".');
+        }
+        await sleep(RATE_LIMIT_DELAYS_MS[rateLimitHits++]);
+      } else if (otherFailures++ >= 1) {
+        throw e;
+      }
+    }
   }
 }
 
 const PAGES_PER_BATCH = 5;
-const MODALITY_CONCURRENCY = 4;
+const MODALITY_CONCURRENCY = 2;
 const MAX_PUBLICATION_DAYS = 365;
 
 const SITUATION_STATUS_ID: Partial<Record<string, number>> = { revogadas: 2, anuladas: 3, suspensas: 4 };
@@ -186,7 +207,9 @@ export function applyLocalFilters(list: NormalizedProcess[], filters: SearchFilt
     if (filters.maxValue != null && (r.estimated_value == null || r.estimated_value > filters.maxValue)) return false;
     if (!inDateRange(r.opening_date, filters.openDateStart, filters.openDateEnd)) return false;
     if (!inDateRange(r.closing_date, filters.closeDateStart, filters.closeDateEnd)) return false;
-    if (situation === 'encerradas') {
+    if (situation === 'abertas') {
+      if (r.status_id != null && r.status_id !== 1) return false;
+    } else if (situation === 'encerradas') {
       if (r.status_id !== 1 || !r.closing_date || new Date(r.closing_date) >= now) return false;
     } else if (SITUATION_STATUS_ID[situation] && r.status_id !== SITUATION_STATUS_ID[situation]) {
       return false;
@@ -214,48 +237,55 @@ interface ModalityCursor {
  * Sessão de busca incremental: cada next() lê até 5 páginas de cada modalidade
  * pendente e devolve só os registros novos que passam nos filtros locais.
  */
-export function createSearch(filters: SearchFilters, today: Date = new Date()): { next(): Promise<SearchBatch> } {
+export function createSearch(filters: SearchFilters, today: Date = new Date()): { next(onProgress?: (partial: SearchBatch) => void): Promise<SearchBatch> } {
   const cursors: ModalityCursor[] = (filters.modality ? [filters.modality] : PNCP_MODALITIES.map(m => m.code))
     .map(code => ({ code, nextPage: 1, totalPages: null, done: false }));
   const seen = new Set<string>();
   let scanned = 0;
   let total = 0;
 
-  async function readModality(cursor: ModalityCursor, found: NormalizedProcess[], errors: string[]) {
+  async function readModality(cursor: ModalityCursor, onPage: (records: NormalizedProcess[]) => void, errors: string[]) {
     for (let i = 0; i < PAGES_PER_BATCH && !cursor.done; i++) {
       try {
         const page = await fetchPncpPage(buildPncpUrl(filters, cursor.code, cursor.nextPage, today));
         if (cursor.totalPages === null) total += page.totalRegistros;
         cursor.totalPages = page.totalPaginas;
         scanned += page.data.length;
-        found.push(...page.data);
+        onPage(page.data);
         cursor.nextPage++;
         if (cursor.nextPage > cursor.totalPages) cursor.done = true;
       } catch (e) {
+        // Mantém a modalidade pendente: o próximo next() tenta a mesma página de novo.
         errors.push(e instanceof Error ? e.message : String(e));
-        cursor.done = true;
+        return;
       }
     }
   }
 
   return {
-    async next() {
-      const found: NormalizedProcess[] = [];
+    async next(onProgress) {
+      const data: NormalizedProcess[] = [];
       const errors: string[] = [];
+
+      const snapshot = (): SearchBatch => {
+        let source: SourceStatus;
+        if (errors.length) source = { name: 'PNCP', status: 'error', message: `Falha em ${errors.length} consulta(s): ${errors[0]}` };
+        else if (scanned === 0) source = { name: 'PNCP', status: 'empty', message: 'Nenhum edital encontrado' };
+        else source = { name: 'PNCP', status: 'ok' };
+        return { data: [...data], scanned, total, sources: [source], hasMore: cursors.some(c => !c.done) };
+      };
+
+      const onPage = (records: NormalizedProcess[]) => {
+        const fresh = records.filter(p => !seen.has(p.id) && seen.add(p.id));
+        data.push(...applyLocalFilters(fresh, filters, today));
+        onProgress?.(snapshot());
+      };
+
       const pending = cursors.filter(c => !c.done);
       for (let i = 0; i < pending.length; i += MODALITY_CONCURRENCY) {
-        await Promise.all(pending.slice(i, i + MODALITY_CONCURRENCY).map(c => readModality(c, found, errors)));
+        await Promise.all(pending.slice(i, i + MODALITY_CONCURRENCY).map(c => readModality(c, onPage, errors)));
       }
-
-      const fresh = found.filter(p => !seen.has(p.id) && seen.add(p.id));
-      const data = applyLocalFilters(fresh, filters, today);
-
-      let source: SourceStatus;
-      if (errors.length) source = { name: 'PNCP', status: 'error', message: `Falha em ${errors.length} consulta(s): ${errors[0]}` };
-      else if (scanned === 0) source = { name: 'PNCP', status: 'empty', message: 'Nenhum edital encontrado' };
-      else source = { name: 'PNCP', status: 'ok' };
-
-      return { data, scanned, total, sources: [source], hasMore: cursors.some(c => !c.done) };
+      return snapshot();
     },
   };
 }
