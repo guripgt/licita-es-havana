@@ -1,8 +1,9 @@
-import { useEffect, useRef, useState } from 'react';
+import { Fragment, useEffect, useRef, useState } from 'react';
 import { formatCurrency, formatDate, UF_LIST, SITUATION_OPTIONS } from '@/lib/constants';
 import { validateFilters, PNCP_MODALITIES, type SearchBatch, type SearchSession } from '@/lib/pncp';
 import { createSearch } from '@/lib/search';
 import { situationBadge } from '@/lib/situation';
+import { MatchedItemsRow } from '@/components/search/MatchedItemsRow';
 import { listProcesses, processKey, saveProcess } from '@/lib/store';
 import type { NormalizedProcess, SearchFilters, Situation, SourceStatus } from '@/types/processes';
 import { Button } from '@/components/ui/button';
@@ -27,6 +28,8 @@ const SearchProcesses = () => {
   const [totalRecords, setTotalRecords] = useState(0);
   const [hasMore, setHasMore] = useState(false);
   const [hasSearched, setHasSearched] = useState(false);
+  // palavra-chave da busca exibida (não a do campo, que pode ter sido editada depois)
+  const [activeSearchText, setActiveSearchText] = useState('');
   const sessionRef = useRef<SearchSession | null>(null);
 
   // Restore filters from localStorage
@@ -114,6 +117,7 @@ const SearchProcesses = () => {
     const error = validateFilters(filters);
     if (error) { toast.error(error); return; }
     sessionRef.current?.cancel();
+    setActiveSearchText(filters.searchText?.trim() || '');
     const session = createSearch(filters);
     sessionRef.current = session;
     runBatch(session, false);
@@ -408,7 +412,7 @@ const SearchProcesses = () => {
           </div>
         ) : (
           <>
-            <div className="overflow-x-auto">
+            <div className="overflow-x-auto [container-type:inline-size]">
               <table className="w-full text-sm" style={{ minWidth: '1100px' }}>
                 <thead>
                   <tr className="border-b border-border text-left text-xs uppercase tracking-wider text-muted-foreground">
@@ -430,7 +434,8 @@ const SearchProcesses = () => {
                   {processes.map((p) => {
                     const badge = getStatusBadge(p);
                     return (
-                      <tr key={p.id} className="border-b border-border/50 hover:bg-muted/30 transition-colors">
+                      <Fragment key={p.id}>
+                      <tr className="border-b border-border/50 hover:bg-muted/30 transition-colors">
                         <td className="px-3 py-2.5">
                           <button aria-label="Favoritar" onClick={() => toggleFavorite(p)} className="text-muted-foreground hover:text-warning transition-colors">
                             <Star className={`h-4 w-4 ${favorites.has(processKey(p)) ? 'fill-warning text-warning' : ''}`} />
@@ -494,6 +499,10 @@ const SearchProcesses = () => {
                           </div>
                         </td>
                       </tr>
+                      {activeSearchText && (
+                        <MatchedItemsRow externalId={p.external_id} searchText={activeSearchText} colSpan={12} />
+                      )}
+                      </Fragment>
                     );
                   })}
                 </tbody>

@@ -140,3 +140,18 @@ e filtrava no navegador). Agora a busca principal usa a mesma API do portal (`/a
   consultas (motor anterior) e o selo mostra "PNCP (modo alternativo)".
 - Selo de situação na tabela: Recebendo propostas / Prazo encerrado / Revogada / Anulada / Suspensa,
   calculado no horário local.
+
+## Atualização 2026-10-20 — itens encontrados na busca
+
+Com palavra-chave, cada processo da lista ganha uma linha cinza com os itens do edital cuja descrição
+contém todas as palavras buscadas (sem acento/caixa; aspas = frase): número, descrição (truncada,
+completa no tooltip), quantidade + unidade, valor unitário e total ("Sigiloso" quando o orçamento é
+sigiloso). Até 5 itens, com "ver mais N itens".
+
+- Fonte: `GET https://pncp.gov.br/api/pncp/v1/orgaos/{cnpj}/compras/{ano}/{seq}/itens?pagina=N&tamanhoPagina=500`
+  (`src/lib/pncpItems.ts`); CNPJ/ano/sequencial vêm do número de controle do PNCP.
+- Cache por compra durante a sessão; no máximo 6 compras consultadas ao mesmo tempo; 1 nova
+  tentativa em falha de conexão; erro mostra "Tentar de novo".
+- Quando nenhum item tem a palavra (ela está em outro campo do edital), a linha avisa.
+- A linha fica presa à área visível da tabela (`container-type: inline-size` + `100cqi`), para os
+  valores aparecerem sem rolagem horizontal.

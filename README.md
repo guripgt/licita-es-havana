@@ -16,6 +16,8 @@ organiza oportunidades num funil e guarda os documentos da empresa.
   para levar os dados para outro computador ou navegador.
 - Dicas de busca: use aspas para frase exata (`"material de limpeza"`); o campo "Excluir termos"
   remove resultados com aquelas palavras.
+- Ao buscar por palavra-chave, cada licitação mostra logo abaixo (linha cinza) os itens do edital que
+  contêm a palavra: número do item, descrição, quantidade, valor unitário e valor total.
 
 ## Rodar localmente
 

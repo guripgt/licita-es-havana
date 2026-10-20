@@ -34,6 +34,9 @@ test("busca por palavra-chave é rápida como no portal (panetone em GO)", async
   expect(Date.now() - start).toBeLessThan(15_000);
   await expect(page.getByText(/^PNCP: Conectado/)).toBeVisible();
   await expect(page.locator("tbody")).toContainText(/panetone|natal/i);
+  // linha cinza com os itens do edital que contêm a palavra
+  await expect(page.getByText(/^Item \d+$/).first()).toBeVisible({ timeout: 15_000 });
+  await expect(page.locator("tbody")).toContainText(/Total\s*R\$/);
   // a tabela larga rola dentro do próprio quadro, sem esticar a página para os lados
   const overflow = await page.evaluate(() => document.documentElement.scrollWidth - window.innerWidth);
   expect(overflow).toBeLessThanOrEqual(0);
