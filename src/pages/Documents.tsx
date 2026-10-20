@@ -1,6 +1,5 @@
 import { useEffect, useState } from 'react';
-import { supabase } from '@/integrations/supabase/client';
-import { useAuth } from '@/contexts/AuthContext';
+import { addDocument, deleteDocument, getDocumentFileUrl, listDocuments, type CompanyDocument } from '@/lib/store';
 import { DOCUMENT_CATEGORIES, formatDate } from '@/lib/constants';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
@@ -12,8 +11,7 @@ import { FileText, Plus, Trash2, Upload } from 'lucide-react';
 import { toast } from 'sonner';
 
 const Documents = () => {
-  const { profile } = useAuth();
-  const [docs, setDocs] = useState<any[]>([]);
+  const [docs, setDocs] = useState<CompanyDocument[]>([]);
   const [loading, setLoading] = useState(true);
   const [dialogOpen, setDialogOpen] = useState(false);
   const [uploading, setUploading] = useState(false);
@@ -26,46 +24,41 @@ const Documents = () => {
   const [file, setFile] = useState<File | null>(null);
 
   const loadDocs = async () => {
-    if (!profile?.company_id) { setLoading(false); return; }
-    const { data } = await supabase.from('company_documents').select('*').eq('company_id', profile.company_id).order('created_at', { ascending: false });
-    setDocs(data || []);
+    setDocs(await listDocuments());
     setLoading(false);
   };
 
-  useEffect(() => { loadDocs(); }, [profile?.company_id]);
+  useEffect(() => { loadDocs(); }, []);
 
   const handleUpload = async () => {
-    if (!profile?.company_id) { toast.error('Configure sua empresa.'); return; }
     if (!name || !category) { toast.error('Preencha nome e categoria.'); return; }
     setUploading(true);
-
-    let fileUrl = '';
-    if (file) {
-      const filePath = `${profile.company_id}/${category}/${Date.now()}_${file.name}`;
-      const { error: uploadErr } = await supabase.storage.from('company-documents').upload(filePath, file);
-      if (uploadErr) { toast.error('Erro ao enviar arquivo: ' + uploadErr.message); setUploading(false); return; }
-      const { data: urlData } = supabase.storage.from('company-documents').getPublicUrl(filePath);
-      fileUrl = urlData.publicUrl;
+    try {
+      await addDocument({
+        name,
+        category,
+        expiry_date: expiryDate || null,
+        notes: notes || null,
+        file: file ? { blob: file, name: file.name, type: file.type } : null,
+      });
+      toast.success('Documento cadastrado!');
+      setName(''); setCategory(''); setExpiryDate(''); setNotes(''); setFile(null);
+      setDialogOpen(false);
+      loadDocs();
+    } catch (err: any) {
+      toast.error('Erro ao salvar documento: ' + (err.message || err));
+    } finally {
+      setUploading(false);
     }
+  };
 
-    await supabase.from('company_documents').insert({
-      company_id: profile.company_id,
-      name,
-      category,
-      expiry_date: expiryDate || null,
-      file_url: fileUrl || null,
-      notes: notes || null,
-    });
-
-    toast.success('Documento cadastrado!');
-    setName(''); setCategory(''); setExpiryDate(''); setNotes(''); setFile(null);
-    setDialogOpen(false);
-    setUploading(false);
-    loadDocs();
+  const openFile = async (docId: string) => {
+    const url = await getDocumentFileUrl(docId);
+    if (url) window.open(url, '_blank', 'noopener');
   };
 
   const deleteDoc = async (docId: string) => {
-    await supabase.from('company_documents').delete().eq('id', docId);
+    await deleteDocument(docId);
     setDocs(prev => prev.filter(d => d.id !== docId));
     toast.success('Documento removido.');
   };
@@ -139,8 +132,8 @@ const Documents = () => {
                   <td className="px-5 py-3">
                     <div className="flex items-center gap-2">
                       <FileText className="h-4 w-4 shrink-0 text-muted-foreground" />
-                      {doc.file_url ? (
-                        <a href={doc.file_url} target="_blank" rel="noopener noreferrer" className="font-medium text-primary hover:underline">{doc.name}</a>
+                      {doc.file ? (
+                        <button type="button" onClick={() => openFile(doc.id)} className="font-medium text-primary hover:underline">{doc.name}</button>
                       ) : (
                         <span className="font-medium text-card-foreground">{doc.name}</span>
                       )}

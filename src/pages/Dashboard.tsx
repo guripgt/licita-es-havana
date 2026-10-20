@@ -1,8 +1,7 @@
 import { useEffect, useState } from 'react';
-import { supabase } from '@/integrations/supabase/client';
-import { useAuth } from '@/contexts/AuthContext';
+import { listDocuments, listProcesses, type CompanyDocument, type SavedProcess } from '@/lib/store';
 import { formatCurrency, formatDate } from '@/lib/constants';
-import { FileText, Search, Play, CheckCircle, AlertTriangle, Clock } from 'lucide-react';
+import { FileText, Search, Play, CheckCircle, Clock } from 'lucide-react';
 import { useNavigate } from 'react-router-dom';
 
 interface Stats {
@@ -13,23 +12,15 @@ interface Stats {
 }
 
 const Dashboard = () => {
-  const { profile } = useAuth();
   const navigate = useNavigate();
   const [stats, setStats] = useState<Stats>({ saved: 0, analysis: 0, participating: 0, finished: 0 });
-  const [recentProcesses, setRecentProcesses] = useState<any[]>([]);
-  const [recentDocs, setRecentDocs] = useState<any[]>([]);
+  const [recentProcesses, setRecentProcesses] = useState<SavedProcess[]>([]);
+  const [recentDocs, setRecentDocs] = useState<CompanyDocument[]>([]);
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
-    if (!profile?.company_id) { setLoading(false); return; }
     const load = async () => {
-      const { data: saved } = await supabase
-        .from('saved_processes')
-        .select('id, funnel_stage, created_at, public_process_id, public_processes(title, agency, estimated_value, closing_date, modality)')
-        .eq('company_id', profile.company_id!)
-        .order('created_at', { ascending: false });
-
-      const items = saved || [];
+      const items = (await listProcesses()).filter(i => i.in_funnel);
       setStats({
         saved: items.length,
         analysis: items.filter(i => i.funnel_stage === 'Em análise').length,
@@ -37,18 +28,11 @@ const Dashboard = () => {
         finished: items.filter(i => i.funnel_stage === 'Finalizado').length,
       });
       setRecentProcesses(items.slice(0, 5));
-
-      const { data: docs } = await supabase
-        .from('company_documents')
-        .select('*')
-        .eq('company_id', profile.company_id!)
-        .order('created_at', { ascending: false })
-        .limit(5);
-      setRecentDocs(docs || []);
+      setRecentDocs((await listDocuments()).slice(0, 5));
       setLoading(false);
     };
     load();
-  }, [profile?.company_id]);
+  }, []);
 
   const statCards = [
     { label: 'Processos Salvos', value: stats.saved, icon: Search, color: 'text-primary' },
@@ -58,16 +42,6 @@ const Dashboard = () => {
   ];
 
   if (loading) return <div className="flex items-center justify-center py-20"><div className="h-8 w-8 animate-spin rounded-full border-4 border-primary border-t-transparent" /></div>;
-
-  if (!profile?.company_id) {
-    return (
-      <div className="flex flex-col items-center justify-center py-20 text-center">
-        <AlertTriangle className="mb-4 h-12 w-12 text-warning" />
-        <h2 className="text-lg font-semibold text-foreground">Empresa não configurada</h2>
-        <p className="mt-1 text-sm text-muted-foreground">Vá em Configurações para vincular sua empresa.</p>
-      </div>
-    );
-  }
 
   return (
     <div className="space-y-6">
@@ -108,9 +82,9 @@ const Dashboard = () => {
                 </thead>
                 <tbody>
                   {recentProcesses.map((p) => {
-                    const proc = p.public_processes as any;
+                    const proc = p;
                     return (
-                      <tr key={p.id} className="border-b border-border/50 hover:bg-muted/30 cursor-pointer" onClick={() => navigate(`/licitacao/${p.public_process_id}`)}>
+                      <tr key={p.key} className="border-b border-border/50 hover:bg-muted/30 cursor-pointer" onClick={() => navigate(`/licitacao/${p.source}/${encodeURIComponent(p.external_id)}`)}>
                         <td className="max-w-[200px] truncate px-5 py-3 font-medium text-card-foreground">{proc?.title}</td>
                         <td className="px-5 py-3 tabular-nums font-mono text-card-foreground">{formatCurrency(proc?.estimated_value)}</td>
                         <td className="px-5 py-3"><span className="rounded-full bg-muted px-2 py-0.5 text-xs font-medium text-muted-foreground">{p.funnel_stage}</span></td>

@@ -1,34 +1,28 @@
 import { useEffect, useState } from 'react';
-import { supabase } from '@/integrations/supabase/client';
-import { useAuth } from '@/contexts/AuthContext';
+import { listProcesses, saveProcess, type SavedProcess } from '@/lib/store';
 import { FUNNEL_STAGES, formatCurrency, formatDate } from '@/lib/constants';
 import { toast } from 'sonner';
 import { useNavigate } from 'react-router-dom';
 import { GripVertical } from 'lucide-react';
 
 const Funnel = () => {
-  const { profile } = useAuth();
   const navigate = useNavigate();
-  const [items, setItems] = useState<any[]>([]);
+  const [items, setItems] = useState<SavedProcess[]>([]);
   const [loading, setLoading] = useState(true);
   const [dragItem, setDragItem] = useState<string | null>(null);
 
   useEffect(() => {
-    if (!profile?.company_id) { setLoading(false); return; }
-    const load = async () => {
-      const { data } = await supabase
-        .from('saved_processes')
-        .select('*, public_processes(title, agency, modality, estimated_value, closing_date)')
-        .eq('company_id', profile.company_id!);
-      setItems(data || []);
+    listProcesses().then(all => {
+      setItems(all.filter(i => i.in_funnel));
       setLoading(false);
-    };
-    load();
-  }, [profile?.company_id]);
+    });
+  }, []);
 
-  const moveToStage = async (itemId: string, newStage: string) => {
-    await supabase.from('saved_processes').update({ funnel_stage: newStage }).eq('id', itemId);
-    setItems(prev => prev.map(i => i.id === itemId ? { ...i, funnel_stage: newStage } : i));
+  const moveToStage = async (itemKey: string, newStage: string) => {
+    const item = items.find(i => i.key === itemKey);
+    if (!item) return;
+    await saveProcess(item, { funnel_stage: newStage });
+    setItems(prev => prev.map(i => i.key === itemKey ? { ...i, funnel_stage: newStage } : i));
     toast.success(`Movido para "${newStage}"`);
   };
 
@@ -73,15 +67,15 @@ const Funnel = () => {
               </div>
               <div className="flex-1 space-y-2 p-2">
                 {stageItems.map(item => {
-                  const proc = item.public_processes as any;
+                  const proc = item;
                   const isUrgent = proc?.closing_date && new Date(proc.closing_date).getTime() - Date.now() < 48 * 60 * 60 * 1000;
                   return (
                     <div
-                      key={item.id}
+                      key={item.key}
                       draggable
-                      onDragStart={(e) => handleDragStart(e, item.id)}
+                      onDragStart={(e) => handleDragStart(e, item.key)}
                       className="cursor-grab rounded-lg bg-card p-3.5 shadow-card transition-all hover:shadow-card-hover active:cursor-grabbing active:scale-[1.02] active:rotate-1"
-                      onClick={() => navigate(`/licitacao/${item.public_process_id}`)}
+                      onClick={() => navigate(`/licitacao/${item.source}/${encodeURIComponent(item.external_id)}`)}
                     >
                       <div className="flex items-start gap-2">
                         <GripVertical className="mt-0.5 h-3.5 w-3.5 shrink-0 text-muted-foreground/40" />
