@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
 import { formatCurrency, formatDate, UF_LIST, SITUATION_OPTIONS } from '@/lib/constants';
-import { createSearch, validateFilters, PNCP_MODALITIES, type SearchBatch } from '@/lib/pncp';
+import { createSearch, validateFilters, PNCP_MODALITIES, type SearchBatch, type SearchSession } from '@/lib/pncp';
 import { listProcesses, processKey, saveProcess } from '@/lib/store';
 import type { NormalizedProcess, SearchFilters, Situation, SourceStatus } from '@/types/processes';
 import { Button } from '@/components/ui/button';
@@ -11,8 +11,6 @@ import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip
 import { Star, Eye, FolderPlus, ChevronDown, ChevronUp, X, AlertTriangle, Loader2, Search } from 'lucide-react';
 import { useNavigate } from 'react-router-dom';
 import { toast } from 'sonner';
-
-type SearchSession = ReturnType<typeof createSearch>;
 
 const SearchProcesses = () => {
   const navigate = useNavigate();
@@ -78,11 +76,14 @@ const SearchProcesses = () => {
   });
 
   const runBatch = async (session: SearchSession, append: boolean) => {
+    const isCurrent = () => sessionRef.current === session; // uma busca mais nova pode ter começado
     if (append) setLoadingMore(true); else setLoading(true);
-    const base = append ? processes : [];
+    let shown = 0; // quantos registros deste lote já estão na tela
     const show = (batch: SearchBatch) => {
-      if (sessionRef.current !== session) return; // uma busca mais nova começou
-      setProcesses([...base, ...batch.data]);
+      if (!isCurrent()) return;
+      const added = batch.data.slice(shown);
+      shown = batch.data.length;
+      setProcesses(prev => [...prev, ...added]);
       setSources(batch.sources);
       setScanned(batch.scanned);
       setTotalRecords(batch.total);
@@ -91,14 +92,16 @@ const SearchProcesses = () => {
       // a tabela já pode aparecer enquanto o lote continua; o botão mostra que ainda está lendo
       if (batch.scanned > 0) { setLoading(false); setLoadingMore(true); }
     };
+    if (!append) setProcesses([]);
     try {
       show(await session.next(show));
     } catch (err: any) {
-      toast.error(err.message || 'Erro ao buscar licitações');
-      if (!append) setProcesses([]);
+      if (isCurrent()) toast.error(err.message || 'Erro ao buscar licitações');
     } finally {
-      setLoading(false);
-      setLoadingMore(false);
+      if (isCurrent()) {
+        setLoading(false);
+        setLoadingMore(false);
+      }
     }
   };
 
@@ -106,6 +109,7 @@ const SearchProcesses = () => {
     const filters = buildFilters();
     const error = validateFilters(filters);
     if (error) { toast.error(error); return; }
+    sessionRef.current?.cancel();
     const session = createSearch(filters);
     sessionRef.current = session;
     runBatch(session, false);
@@ -167,8 +171,11 @@ const SearchProcesses = () => {
   };
 
   const handleLoadMore = () => {
-    if (sessionRef.current) runBatch(sessionRef.current, true);
+    if (sessionRef.current && !loadingMore) runBatch(sessionRef.current, true);
   };
+
+  // Ao sair da tela, para as consultas pendentes
+  useEffect(() => () => sessionRef.current?.cancel(), []);
 
   // Status badge helper
   const getStatusBadge = (process: NormalizedProcess) => {

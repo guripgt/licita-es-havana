@@ -93,4 +93,13 @@ describe('backup', () => {
     await expect(importBackup(new Blob(['não é json']))).rejects.toThrow('Arquivo de backup inválido.');
     expect(await listProcesses()).toHaveLength(1);
   });
+
+  it('rejeita backup com registro malformado sem apagar os dados', async () => {
+    await saveProcess(proc('a'), { in_funnel: true });
+    const malformed = new Blob([JSON.stringify({
+      app: 'licitacoes-havana', version: 1, processes: [{ title: 'sem chave' }], documents: [], settings: {},
+    })]);
+    await expect(importBackup(malformed)).rejects.toThrow('Arquivo de backup inválido.');
+    expect(await listProcesses()).toHaveLength(1);
+  });
 });

@@ -53,8 +53,12 @@ const Documents = () => {
   };
 
   const openFile = async (docId: string) => {
+    // Abre a janela ainda dentro do clique; após um await o Safari bloqueia como pop-up
+    const win = window.open('', '_blank');
     const url = await getDocumentFileUrl(docId);
-    if (url) window.open(url, '_blank', 'noopener');
+    if (!win) return;
+    if (url) win.location.href = url;
+    else win.close();
   };
 
   const deleteDoc = async (docId: string) => {

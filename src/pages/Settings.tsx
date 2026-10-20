@@ -37,7 +37,8 @@ const SettingsPage = () => {
     a.href = url;
     a.download = `licitacoes-backup-${new Date().toISOString().substring(0, 10)}.json`;
     a.click();
-    URL.revokeObjectURL(url);
+    // Safari/Firefox cancelam o download se o link for revogado logo após o clique
+    setTimeout(() => URL.revokeObjectURL(url), 60_000);
     toast.success('Backup exportado!');
   };
 

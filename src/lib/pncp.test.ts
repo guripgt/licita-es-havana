@@ -142,6 +142,17 @@ describe('fetchPncpPage com limite de requisições (429)', () => {
   });
 });
 
+describe('fetchPncpPage sem internet', () => {
+  it('falha na hora, sem esperar, quando o navegador está offline', async () => {
+    const f = vi.fn();
+    vi.stubGlobal('fetch', f);
+    const spy = vi.spyOn(navigator, 'onLine', 'get').mockReturnValue(false);
+    await expect(fetchPncpPage('https://x')).rejects.toThrow('Sem conexão com a internet.');
+    expect(f).not.toHaveBeenCalled();
+    spy.mockRestore();
+  });
+});
+
 describe('PNCP_MODALITIES', () => {
   it('tem os 13 códigos oficiais', () => {
     expect(PNCP_MODALITIES.map(m => m.code)).toEqual([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13]);
@@ -268,6 +279,23 @@ describe('createSearch', () => {
     const batch = await createSearch({ modality: 6 }, today).next(p => partials.push(p.data.length));
     expect(partials).toEqual([1, 2, 3]);
     expect(batch.data).toHaveLength(3);
+  });
+
+  it('next() chamado de novo durante um lote reaproveita o lote em andamento', async () => {
+    const f = stubPages((_m, page) => jsonResponse(200, { data: [record(`p${page}`)], totalRegistros: 7, totalPaginas: 7 }));
+    const search = createSearch({ modality: 6 }, today);
+    const [a, b] = await Promise.all([search.next(), search.next()]);
+    expect(f).toHaveBeenCalledTimes(5);
+    expect(a).toEqual(b);
+    expect(a.total).toBe(7);
+  });
+
+  it('cancel() interrompe a leitura de páginas', async () => {
+    const f = stubPages((_m, page) => jsonResponse(200, { data: [record(`p${page}`)], totalRegistros: 7, totalPaginas: 7 }));
+    const search = createSearch({ modality: 6 }, today);
+    const batch = await search.next(() => search.cancel());
+    expect(f).toHaveBeenCalledTimes(1);
+    expect(batch.sources[0].status).toBe('ok');
   });
 
   it('não repete registro que aparece em duas páginas', async () => {

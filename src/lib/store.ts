@@ -90,7 +90,15 @@ async function tx<T>(stores: StoreName[], mode: IDBTransactionMode, fn: (t: IDBT
     t.onerror = () => reject(t.error);
     t.onabort = () => reject(t.error);
   });
-  const result = await fn(t);
+  let result: T;
+  try {
+    result = await fn(t);
+  } catch (e) {
+    // Um erro síncrono (ex.: put inválido) não aborta a transação sozinho: desfaz tudo explicitamente.
+    try { t.abort(); } catch { /* já finalizada */ }
+    done.catch(() => {});
+    throw e;
+  }
   await done;
   return result;
 }
@@ -229,6 +237,7 @@ export async function exportBackup(): Promise<Blob> {
 }
 
 /** Substitui todos os dados pelos do backup. Arquivo inválido não altera nada. */
+/* eslint-disable @typescript-eslint/no-explicit-any */
 export async function importBackup(file: Blob): Promise<{ processes: number; documents: number }> {
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   let backup: any;
@@ -237,17 +246,27 @@ export async function importBackup(file: Blob): Promise<{ processes: number; doc
   } catch {
     throw new Error('Arquivo de backup inválido.');
   }
+  const validProcess = (p: any) => typeof p?.key === 'string' && typeof p?.source === 'string'
+    && typeof p?.external_id === 'string' && Array.isArray(p?.linked_doc_ids);
+  const validDocument = (d: any) => typeof d?.id === 'string' && typeof d?.name === 'string'
+    && (d.file == null || typeof d.file.data === 'string');
   if (backup?.app !== BACKUP_APP || backup?.version !== BACKUP_VERSION
-    || !Array.isArray(backup.processes) || !Array.isArray(backup.documents)) {
+    || !Array.isArray(backup.processes) || !Array.isArray(backup.documents)
+    || !backup.processes.every(validProcess) || !backup.documents.every(validDocument)) {
     throw new Error('Arquivo de backup inválido.');
   }
 
   const processes: SavedProcess[] = backup.processes;
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  const documents: StoredDocument[] = backup.documents.map((d: any) => ({
-    ...d,
-    file: d.file ? { ...d.file, data: base64ToBuffer(d.file.data) } : null,
-  }));
+  let documents: StoredDocument[];
+  try {
+    documents = backup.documents.map((d: any) => ({
+      ...d,
+      file: d.file ? { ...d.file, data: base64ToBuffer(d.file.data) } : null,
+    }));
+  } catch {
+    throw new Error('Arquivo de backup inválido.');
+  }
 
   await tx(['processes', 'documents', 'settings'], 'readwrite', t => {
     const ps = t.objectStore('processes');
