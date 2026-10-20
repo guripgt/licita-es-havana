@@ -1,5 +1,6 @@
 import { describe, it, expect, vi, afterEach } from 'vitest';
-import { buildPncpUrl, normalizePncpRecord, fetchPncpPage, PNCP_MODALITIES } from './pncp';
+import { buildPncpUrl, normalizePncpRecord, fetchPncpPage, PNCP_MODALITIES, applyLocalFilters, validateFilters, createSearch } from './pncp';
+import type { NormalizedProcess } from '@/types/processes';
 
 const today = new Date('2026-10-19T12:00:00');
 
@@ -107,5 +108,111 @@ describe('fetchPncpPage', () => {
 describe('PNCP_MODALITIES', () => {
   it('tem os 13 códigos oficiais', () => {
     expect(PNCP_MODALITIES.map(m => m.code)).toEqual([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13]);
+  });
+});
+
+function proc(over: Partial<NormalizedProcess>): NormalizedProcess {
+  return {
+    id: 'pncp_x', external_id: 'x', source: 'PNCP', title: 'Item', object_description: '', agency: 'Órgão',
+    government_level: null, modality: null, estimated_value: 100, homologated_value: null, is_srp: false,
+    state: 'SP', city: 'São Paulo', publication_date: null, opening_date: null, closing_date: null,
+    status: null, status_id: 1, source_portal: 'PNCP', external_url: null, ...over,
+  };
+}
+
+describe('applyLocalFilters', () => {
+  const now = new Date('2026-10-19T12:00:00');
+
+  it('casa palavras sem acento nem caixa', () => {
+    const list = [proc({ id: 'a', title: 'PREGÃO ELETRÔNICO para cadeiras' }), proc({ id: 'b', title: 'Concurso' })];
+    expect(applyLocalFilters(list, { searchText: 'pregao eletronico' }, now).map(p => p.id)).toEqual(['a']);
+  });
+
+  it('exclui termos', () => {
+    const list = [proc({ id: 'a', title: 'Obra de reforma' }), proc({ id: 'b', title: 'Cadeiras' })];
+    expect(applyLocalFilters(list, { excludeText: 'obra' }, now).map(p => p.id)).toEqual(['b']);
+  });
+
+  it('valor mínimo descarta valor nulo', () => {
+    const list = [proc({ id: 'a', estimated_value: null }), proc({ id: 'b', estimated_value: 600 })];
+    expect(applyLocalFilters(list, { minValue: 500 }, now).map(p => p.id)).toEqual(['b']);
+  });
+
+  it('filtra SRP e cidade', () => {
+    const list = [proc({ id: 'a', is_srp: true }), proc({ id: 'b', is_srp: false }), proc({ id: 'c', is_srp: true, city: 'Campinas' })];
+    expect(applyLocalFilters(list, { srp: 'sim', city: 'sao paulo' }, now).map(p => p.id)).toEqual(['a']);
+  });
+
+  it('filtra por situação', () => {
+    const list = [
+      proc({ id: 'aberta', status_id: 1, closing_date: '2026-11-01T09:00:00' }),
+      proc({ id: 'encerrada', status_id: 1, closing_date: '2026-10-01T09:00:00' }),
+      proc({ id: 'rev', status_id: 2 }), proc({ id: 'anu', status_id: 3 }), proc({ id: 'sus', status_id: 4 }),
+    ];
+    const ids = (situation: any) => applyLocalFilters(list, { situation }, now).map(p => p.id);
+    expect(ids('encerradas')).toEqual(['encerrada']);
+    expect(ids('revogadas')).toEqual(['rev']);
+    expect(ids('anuladas')).toEqual(['anu']);
+    expect(ids('suspensas')).toEqual(['sus']);
+    expect(ids('todas')).toHaveLength(5);
+  });
+});
+
+describe('validateFilters', () => {
+  it('rejeita período de publicação acima de 365 dias', () => {
+    expect(validateFilters({ situation: 'todas', pubDateStart: '2025-01-01', pubDateEnd: '2026-10-19' }))
+      .toBe('O período de publicação não pode passar de 365 dias.');
+  });
+
+  it('rejeita início posterior ao fim', () => {
+    expect(validateFilters({ situation: 'todas', pubDateStart: '2026-10-01', pubDateEnd: '2026-09-01' }))
+      .toBe('A data inicial de publicação é posterior à final.');
+  });
+
+  it('ignora período de publicação para abertas', () => {
+    expect(validateFilters({ situation: 'abertas', pubDateStart: '2020-01-01' })).toBeNull();
+  });
+});
+
+describe('createSearch', () => {
+  function stubPages(handler: (modality: number, page: number) => Response) {
+    const f = vi.fn().mockImplementation(async (url: string) => {
+      const p = new URL(url).searchParams;
+      return handler(Number(p.get('codigoModalidadeContratacao')), Number(p.get('pagina')));
+    });
+    vi.stubGlobal('fetch', f);
+    return f;
+  }
+
+  const record = (id: string) => ({ numeroControlePNCP: id, objetoCompra: `Objeto ${id}`, situacaoCompraId: 1 });
+
+  it('lê até 5 páginas por lote e continua no próximo', async () => {
+    const f = stubPages((_m, page) => jsonResponse(200, { data: [record(`p${page}`)], totalRegistros: 7, totalPaginas: 7 }));
+    const search = createSearch({ modality: 6 }, today);
+    const first = await search.next();
+    expect(f).toHaveBeenCalledTimes(5);
+    expect(first.hasMore).toBe(true);
+    expect(first.scanned).toBe(5);
+    expect(first.total).toBe(7);
+    const second = await search.next();
+    expect(f).toHaveBeenCalledTimes(7);
+    expect(second.hasMore).toBe(false);
+    expect(second.data).toHaveLength(2);
+  });
+
+  it('mostra resultados parciais quando uma modalidade falha', async () => {
+    stubPages((m) => m === 8
+      ? jsonResponse(500, { message: 'Erro interno' })
+      : jsonResponse(200, { data: [record(`m${m}`)], totalRegistros: 1, totalPaginas: 1 }));
+    const batch = await createSearch({}, today).next();
+    expect(batch.data).toHaveLength(12);
+    expect(batch.sources[0].status).toBe('error');
+    expect(batch.sources[0].message).toMatch(/^Falha em 1 consulta\(s\): Erro interno/);
+  });
+
+  it('não repete registro que aparece em duas páginas', async () => {
+    stubPages(() => jsonResponse(200, { data: [record('mesmo')], totalRegistros: 2, totalPaginas: 2 }));
+    const batch = await createSearch({ modality: 6 }, today).next();
+    expect(batch.data).toHaveLength(1);
   });
 });
