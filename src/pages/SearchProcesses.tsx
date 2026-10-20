@@ -4,7 +4,8 @@ import { validateFilters, PNCP_MODALITIES, type SearchBatch, type SearchSession 
 import { createSearch } from '@/lib/search';
 import { situationBadge } from '@/lib/situation';
 import { MatchedItemsRow } from '@/components/search/MatchedItemsRow';
-import { listProcesses, processKey, saveProcess } from '@/lib/store';
+import { RemoveFromFunnelButton } from '@/components/RemoveFromFunnelButton';
+import { listProcesses, processKey, saveProcess, type SavedProcess } from '@/lib/store';
 import type { NormalizedProcess, SearchFilters, Situation, SourceStatus } from '@/types/processes';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
@@ -22,6 +23,8 @@ const SearchProcesses = () => {
   const [loadingMore, setLoadingMore] = useState(false);
   const [showFilters, setShowFilters] = useState(true);
   const [favorites, setFavorites] = useState<Set<string>>(new Set());
+  // processos que já estão no funil, por chave
+  const [inFunnel, setInFunnel] = useState<Map<string, SavedProcess>>(new Map());
   const [sources, setSources] = useState<SourceStatus[]>([]);
   const [scanned, setScanned] = useState(0);
   const [exactTotal, setExactTotal] = useState(false);
@@ -126,6 +129,7 @@ const SearchProcesses = () => {
   const loadFavorites = async () => {
     const saved = await listProcesses();
     setFavorites(new Set(saved.filter(p => p.is_favorite).map(p => p.key)));
+    setInFunnel(new Map(saved.filter(p => p.in_funnel).map(p => [p.key, p])));
   };
 
   useEffect(() => {
@@ -138,8 +142,9 @@ const SearchProcesses = () => {
     const key = processKey(process);
     const isFav = favorites.has(key);
     try {
-      await saveProcess(process, { is_favorite: !isFav });
+      const updated = await saveProcess(process, { is_favorite: !isFav });
       setFavorites(prev => { const n = new Set(prev); if (isFav) n.delete(key); else n.add(key); return n; });
+      if (updated.in_funnel) setInFunnel(prev => new Map(prev).set(key, updated));
       toast.success(isFav ? 'Removido dos favoritos' : 'Adicionado aos favoritos');
     } catch (err: any) {
       toast.error(err.message || 'Erro ao favoritar');
@@ -150,7 +155,8 @@ const SearchProcesses = () => {
     try {
       const saved = (await listProcesses()).find(p => p.key === processKey(process));
       if (saved?.in_funnel) { toast.info('Processo já está no funil.'); return; }
-      await saveProcess(process, { in_funnel: true });
+      const updated = await saveProcess(process, { in_funnel: true });
+      setInFunnel(prev => new Map(prev).set(updated.key, updated));
       toast.success('Processo salvo no funil!');
     } catch (err: any) {
       toast.error(err.message || 'Erro ao salvar no funil');
@@ -488,14 +494,22 @@ const SearchProcesses = () => {
                               </TooltipTrigger>
                               <TooltipContent>Ver detalhes</TooltipContent>
                             </Tooltip>
-                            <Tooltip>
-                              <TooltipTrigger asChild>
-                                <Button variant="ghost" size="icon" className="h-7 w-7" aria-label="Salvar no funil" onClick={() => saveToFunnel(p)}>
-                                  <FolderPlus className="h-3.5 w-3.5" />
-                                </Button>
-                              </TooltipTrigger>
-                              <TooltipContent>Salvar no funil</TooltipContent>
-                            </Tooltip>
+                            {inFunnel.has(processKey(p)) ? (
+                              <RemoveFromFunnelButton
+                                variant="search"
+                                process={inFunnel.get(processKey(p))!}
+                                onRemoved={() => setInFunnel(prev => { const n = new Map(prev); n.delete(processKey(p)); return n; })}
+                              />
+                            ) : (
+                              <Tooltip>
+                                <TooltipTrigger asChild>
+                                  <Button variant="ghost" size="icon" className="h-7 w-7" aria-label="Salvar no funil" onClick={() => saveToFunnel(p)}>
+                                    <FolderPlus className="h-3.5 w-3.5" />
+                                  </Button>
+                                </TooltipTrigger>
+                                <TooltipContent>Salvar no funil</TooltipContent>
+                              </Tooltip>
+                            )}
                           </div>
                         </td>
                       </tr>

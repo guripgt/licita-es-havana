@@ -8,6 +8,7 @@ import Dashboard from "./pages/Dashboard";
 import SearchProcesses from "./pages/SearchProcesses";
 import ProcessDetail from "./pages/ProcessDetail";
 import Funnel from "./pages/Funnel";
+import Favorites from "./pages/Favorites";
 import Documents from "./pages/Documents";
 import SettingsPage from "./pages/Settings";
 import NotFound from "./pages/NotFound";
@@ -28,6 +29,7 @@ const App = () => (
           <Route path="/" element={<Page><Dashboard /></Page>} />
           <Route path="/buscar" element={<Page><SearchProcesses /></Page>} />
           <Route path="/licitacao/:source/:externalId" element={<Page><ProcessDetail /></Page>} />
+          <Route path="/favoritos" element={<Page><Favorites /></Page>} />
           <Route path="/funil" element={<Page><Funnel /></Page>} />
           <Route path="/documentos" element={<Page><Documents /></Page>} />
           <Route path="/configuracoes" element={<Page><SettingsPage /></Page>} />

@@ -9,11 +9,12 @@ import {
   useSidebar,
 } from '@/components/ui/sidebar';
 import { NavLink } from '@/components/NavLink';
-import { LayoutDashboard, Search, Kanban, FileText, Settings, Building2 } from 'lucide-react';
+import { LayoutDashboard, Search, Star, Kanban, FileText, Settings, Building2 } from 'lucide-react';
 
 const navItems = [
   { title: 'Dashboard', url: '/', icon: LayoutDashboard },
   { title: 'Buscar Licitações', url: '/buscar', icon: Search },
+  { title: 'Favoritos', url: '/favoritos', icon: Star },
   { title: 'Funil Operacional', url: '/funil', icon: Kanban },
   { title: 'Documentos', url: '/documentos', icon: FileText },
   { title: 'Configurações', url: '/configuracoes', icon: Settings },

@@ -4,6 +4,7 @@ import { FUNNEL_STAGES, formatCurrency, formatDate } from '@/lib/constants';
 import { toast } from 'sonner';
 import { useNavigate } from 'react-router-dom';
 import { GripVertical } from 'lucide-react';
+import { RemoveFromFunnelButton } from '@/components/RemoveFromFunnelButton';
 
 const Funnel = () => {
   const navigate = useNavigate();
@@ -84,6 +85,11 @@ const Funnel = () => {
                           <p className="mt-1 truncate text-xs text-muted-foreground">{proc?.agency}</p>
                           <p className="text-xs text-muted-foreground">{proc?.modality}</p>
                         </div>
+                        <RemoveFromFunnelButton
+                          variant="card"
+                          process={item}
+                          onRemoved={() => setItems(prev => prev.filter(i => i.key !== item.key))}
+                        />
                       </div>
                       <div className="mt-3 flex items-center justify-between border-t border-border/30 pt-2.5">
                         <span className="text-sm font-mono font-medium tabular-nums text-card-foreground">{formatCurrency(proc?.estimated_value)}</span>

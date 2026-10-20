@@ -16,6 +16,8 @@ test("busca real no PNCP, salva no funil e persiste após recarregar", async ({ 
 
   await firstRow.getByRole("button", { name: "Salvar no funil" }).click();
   await expect(page.getByText("Processo salvo no funil!")).toBeVisible();
+  // a pasta passa a indicar que o processo está no funil (e permite remover)
+  await expect(firstRow.getByRole("button", { name: "Remover do funil" })).toBeVisible();
 
   await page.goto("./#/funil");
   await expect(page.getByText(title.slice(0, 40)).first()).toBeVisible();
@@ -40,6 +42,31 @@ test("busca por palavra-chave é rápida como no portal (panetone em GO)", async
   // a tabela larga rola dentro do próprio quadro, sem esticar a página para os lados
   const overflow = await page.evaluate(() => document.documentElement.scrollWidth - window.innerWidth);
   expect(overflow).toBeLessThanOrEqual(0);
+});
+
+test("favoritar aparece em Favoritos e remover do funil tira do Dashboard", async ({ page }) => {
+  await page.goto("./#/buscar");
+  await page.getByLabel("Buscar no objeto").fill("panetone");
+  await page.getByRole("combobox").nth(1).click();
+  await page.getByRole("option", { name: "GO", exact: true }).click();
+  await page.getByRole("button", { name: "Buscar", exact: true }).click();
+  const row = page.locator("tbody tr").first();
+  await expect(row).toBeVisible({ timeout: 15_000 });
+  const title = (await row.locator("td").nth(2).innerText()).trim().slice(0, 30);
+
+  await row.getByRole("button", { name: "Favoritar" }).click();
+  await page.goto("./#/favoritos");
+  await expect(page.getByText(title).first()).toBeVisible();
+
+  await page.getByRole("button", { name: "Salvar no funil" }).first().click();
+  await page.goto("./#/");
+  await expect(page.getByText(title).first()).toBeVisible();
+  await page.getByRole("button", { name: "Remover do funil" }).first().click();
+  await page.getByRole("alertdialog").getByRole("button", { name: "Remover" }).click();
+  await expect(page.getByText(title)).toHaveCount(0);
+
+  await page.goto("./#/favoritos");
+  await expect(page.getByText(title).first()).toBeVisible();
 });
 
 test("processo inexistente mostra aviso", async ({ page }) => {

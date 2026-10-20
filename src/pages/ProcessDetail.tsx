@@ -8,6 +8,7 @@ import { Textarea } from '@/components/ui/textarea';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { ArrowLeft, Star, ExternalLink, FolderPlus, FileText, Loader2 } from 'lucide-react';
 import { toast } from 'sonner';
+import { RemoveFromFunnelButton } from '@/components/RemoveFromFunnelButton';
 
 const ProcessDetail = () => {
   const { source, externalId } = useParams<{ source: string; externalId: string }>();
@@ -190,6 +191,16 @@ const ProcessDetail = () => {
               <Button className="w-full gap-1" onClick={() => saveOrUpdate('Encontrado')}>
                 <FolderPlus className="h-4 w-4" /> Salvar no funil
               </Button>
+            )}
+            {savedProcess?.in_funnel && (
+              <RemoveFromFunnelButton
+                variant="button"
+                process={savedProcess}
+                onRemoved={updated => {
+                  setSavedProcess(updated.is_favorite ? updated : null);
+                  if (!updated.is_favorite) setNotes('');
+                }}
+              />
             )}
           </div>
 

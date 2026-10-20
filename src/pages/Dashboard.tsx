@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react';
 import { listDocuments, listProcesses, type CompanyDocument, type SavedProcess } from '@/lib/store';
+import { RemoveFromFunnelButton } from '@/components/RemoveFromFunnelButton';
 import { formatCurrency, formatDate } from '@/lib/constants';
 import { FileText, Search, Play, CheckCircle, Clock } from 'lucide-react';
 import { useNavigate } from 'react-router-dom';
@@ -33,6 +34,16 @@ const Dashboard = () => {
     };
     load();
   }, []);
+
+  const removeFromView = (p: SavedProcess) => {
+    setRecentProcesses(prev => prev.filter(i => i.key !== p.key));
+    setStats(prev => ({
+      saved: prev.saved - 1,
+      analysis: prev.analysis - (p.funnel_stage === 'Em análise' ? 1 : 0),
+      participating: prev.participating - (p.funnel_stage === 'Participando' ? 1 : 0),
+      finished: prev.finished - (p.funnel_stage === 'Finalizado' ? 1 : 0),
+    }));
+  };
 
   const statCards = [
     { label: 'Processos Salvos', value: stats.saved, icon: Search, color: 'text-primary' },
@@ -78,6 +89,7 @@ const Dashboard = () => {
                     <th className="px-5 py-3">Valor</th>
                     <th className="px-5 py-3">Etapa</th>
                     <th className="px-5 py-3">Fechamento</th>
+                    <th className="px-3 py-3"></th>
                   </tr>
                 </thead>
                 <tbody>
@@ -89,6 +101,9 @@ const Dashboard = () => {
                         <td className="px-5 py-3 tabular-nums font-mono text-card-foreground">{formatCurrency(proc?.estimated_value)}</td>
                         <td className="px-5 py-3"><span className="rounded-full bg-muted px-2 py-0.5 text-xs font-medium text-muted-foreground">{p.funnel_stage}</span></td>
                         <td className="px-5 py-3 text-muted-foreground">{formatDate(proc?.closing_date)}</td>
+                        <td className="px-3 py-3 text-right">
+                          <RemoveFromFunnelButton process={p} onRemoved={() => removeFromView(p)} />
+                        </td>
                       </tr>
                     );
                   })}

@@ -11,6 +11,9 @@ organiza oportunidades num funil e guarda os documentos da empresa.
   palavra-chave, situação, UF e modalidade são filtradas no servidor do PNCP e o resultado chega em
   menos de 1 segundo. Se ela falhar, o app usa a API oficial de consultas (mais lenta) como plano B.
   Não há servidor próprio nem login.
+- A estrela guarda a licitação em **Favoritos** (menu lateral). A pasta salva no **Funil Operacional**
+  (e no Dashboard); para desistir, use **Remover do funil** no cartão do funil, no Dashboard, no detalhe
+  do processo ou clicando de novo na pasta na busca.
 - Processos salvos, notas, funil, documentos e configurações ficam guardados **neste navegador**
   (IndexedDB). Use **Configurações → Exportar backup** com frequência e **Importar backup**
   para levar os dados para outro computador ou navegador.
