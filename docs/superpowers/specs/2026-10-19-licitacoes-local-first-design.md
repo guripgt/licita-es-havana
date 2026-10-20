@@ -58,8 +58,15 @@ Roteamento passa a `HashRouter` (GitHub Pages não reescreve rotas; evita 404 ao
   usando `totalRegistros`. Sem mais páginas → botão some.
 - Filtros locais (sobre o que foi lido): palavras-chave (todas, sem acento/caixa),
   excluir termos, cidade, órgão, SRP, valor mín/máx, datas de abertura/fechamento.
-- "Situação": a API `/proposta` só retorna compras recebendo proposta; o filtro
-  de situação é removido da tela (evita opção que nunca casa).
+- "Situação" (mantido, com opções novas) escolhe o endpoint:
+  - **Abertas — recebendo propostas** (padrão) → `/v1/contratacoes/proposta` (acima).
+  - **Encerradas** (prazo de proposta já passou), **Revogadas** (situacaoCompraId 2),
+    **Anuladas** (3), **Suspensas** (4) e **Todas** → `/v1/contratacoes/publicacao`
+    com `dataInicial`/`dataFinal` = período de publicação. Na tela, quando a situação não
+    é "Abertas", aparecem os campos "Publicação (início/fim)"; padrão últimos 90 dias.
+    A API rejeita período > 365 dias (422): a tela valida antes e avisa.
+    Filtro de situação aplicado localmente por `situacaoCompraId` / `dataEncerramentoProposta`.
+  - Detalhe exibe "Valor homologado" quando `valorTotalHomologado` existir.
 - Erros: timeout 30s por requisição, 1 nova tentativa; falhas aparecem no aviso de fontes
   ("PNCP: erro — mensagem"), nunca como lista vazia silenciosa.
 - Normalização mantém o tipo `NormalizedProcess` existente; link externo =
